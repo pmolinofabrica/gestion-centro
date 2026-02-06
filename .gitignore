@@ -1,0 +1,38 @@
+config/supabase.json
+config/*.json
+
+FASE3_migracion_datos.py
+
+venv/
+__pycache__/
+*.pyc
+
+.env
+*.env
+
+*.sqlite
+*.db
+
+.vscode/
+.idea/
+
+service_account.json
+
+# Legacy/deprecated
+legacy_frontend_v1/
+node_modules/
+
+# ETL generated output
+etl/output/
+etl/src/__pycache__/
+
+# AI Context & Documentation (Internal)
+archive/ai_docs/
+.ai_context/
+
+# Query exports (large data files)
+query_supabase/*.xlsx
+query_supabase/*.csv
+
+# Data directory
+data/

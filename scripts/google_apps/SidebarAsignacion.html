@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <base target="_top">
+    <link rel="stylesheet" href="https://ssl.gstatic.com/docs/script/css/add-ons1.css">
+    <style>
+        body {
+            padding: 12px;
+            font-family: 'Roboto', sans-serif;
+        }
+
+        .header {
+            margin-bottom: 12px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 8px;
+        }
+
+        .stat-item {
+            margin-bottom: 4px;
+            font-size: 13px;
+            color: #555;
+        }
+
+        .stat-value {
+            font-weight: bold;
+            color: #000;
+        }
+
+        .filter-box {
+            width: 100%;
+            padding: 6px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        #lista-residentes {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+        }
+
+        .residente-item {
+            padding: 8px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+            font-size: 13px;
+        }
+
+        .residente-item:hover {
+            background-color: #f9f9f9;
+        }
+
+        .checkbox-col {
+            margin-right: 10px;
+        }
+
+        .info-col {
+            flex-grow: 1;
+        }
+
+        /* Estilos condicionales */
+        .no-convocado {
+            color: #d93025;
+        }
+
+        /* Rojo para no convocados */
+        .no-convocado .info-col {
+            opacity: 0.8;
+        }
+
+        .alert-col {
+            margin-left: 8px;
+            color: #d93025;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .tag-convocado {
+            font-size: 10px;
+            background: #e6f4ea;
+            color: #137333;
+            padding: 2px 4px;
+            border-radius: 4px;
+            margin-left: 5px;
+        }
+
+        .footer {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+            text-align: right;
+        }
+
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="stat-item">Fecha: <span id="lbl-fecha" class="stat-value">...</span></div>
+        <div class="stat-item">Turno: <span id="lbl-turno" class="stat-value">...</span></div>
+        <div class="stat-item">Grupo: <span id="lbl-grupo" class="stat-value" style="color: #1a73e8;">...</span></div>
+    </div>
+
+    <input type="text" id="filtro" class="filter-box" placeholder="Buscar residente..." onkeyup="filtrarLista()">
+
+    <div id="loading" style="text-align: center; color: #666; padding: 20px;">
+        <div class="spinner"></div> Cargando padrón...
+    </div>
+
+    <div id="lista-residentes">
+        <!-- Items inyectados por JS -->
+    </div>
+
+    <div class="footer">
+        <span id="contador-sel" style="margin-right: 10px; font-size: 12px; color: #666;">0 seleccionados</span>
+        <button id="btn-guardar" class="action" onclick="guardar()">Guardar</button>
+    </div>
+
+    <script>
+        let g_fecha = "", g_idCap = "", g_grupo = "";
+        let g_residentes = [];
+
+        window.onload = function () {
+            try {
+                const data = JSON.parse(<?!= payload ?>);
+                init(data);
+            } catch (e) {
+                console.error("Error parsing payload", e);
+                document.getElementById('loading').innerText = "Error de contexto.";
+            }
+        };
+
+        function init(data) {
+            g_fecha = data.fecha;
+            g_grupo = data.grupo;
+            g_idCap = data.idCap;
+
+            document.getElementById('lbl-fecha').innerText = g_fecha;
+            document.getElementById('lbl-turno').innerText = data.turno;
+            document.getElementById('lbl-grupo').innerText = g_grupo;
+
+            cargarResidentes();
+        }
+
+        function cargarResidentes() {
+            google.script.run
+                .withSuccessHandler(onDataLoaded)
+                .withFailureHandler(onError)
+                .getSidebarData(g_fecha, g_idCap);
+        }
+
+        function onDataLoaded(response) {
+            document.getElementById('loading').classList.add('hidden');
+
+            const mapAsignaciones = new Map();
+            response.asignaciones.forEach(a => mapAsignaciones.set(a.id_agente, a.grupo));
+
+            // Procesar y Ordenar
+            // Prioridad 1: Convocados (arriba) vs No Convocados (abajo)
+            // Prioridad 2: Apellido (alfabético)
+            g_residentes = response.candidatos.map(c => ({
+                ...c,
+                grupoAsignado: mapAsignaciones.get(c.id) || null
+            })).sort((a, b) => {
+                // Primero boolean esConvocado (true va antes -> -1)
+                if (a.esConvocado && !b.esConvocado) return -1;
+                if (!a.esConvocado && b.esConvocado) return 1;
+                // Luego por Nombre
+                return a.nombre.localeCompare(b.nombre);
+            });
+
+            renderLista(g_residentes);
+        }
+
+        function renderLista(items) {
+            const container = document.getElementById('lista-residentes');
+            container.innerHTML = "";
+
+            if (items.length === 0) {
+                container.innerHTML = '<div style="padding:10px; color:#999;">No hay residentes activos.</div>';
+                return;
+            }
+
+            items.forEach(r => {
+                const div = document.createElement('div');
+                // Clase condicional si NO es convocado
+                div.className = 'residente-item' + (r.esConvocado ? '' : ' no-convocado');
+
+                const enEsteGrupo = r.grupoAsignado === g_grupo;
+                const enOtroGrupo = r.grupoAsignado && r.grupoAsignado !== g_grupo;
+
+                let alertHtml = "";
+                if (enOtroGrupo) alertHtml = `<span class="alert-col">⚠️ Grupo ${r.grupoAsignado}</span>`;
+                if (r.esConvocado) alertHtml += `<span class="tag-convocado">Convocado</span>`;
+
+                div.innerHTML = `
+                <div class="checkbox-col">
+                   <input type="checkbox" class="chk-residente" value="${r.id}" 
+                          ${enEsteGrupo ? 'checked' : ''} 
+                          onchange="actualizarContador()">
+                </div>
+                <div class="info-col">
+                   <div style="font-weight: 500;">${r.nombre} ${r.esConvocado ? '' : '(No convocado)'}</div>
+                   <div style="font-size: 11px;">R${r.anio}</div>
+                </div>
+                ${alertHtml}
+              `;
+                container.appendChild(div);
+            });
+            actualizarContador();
+        }
+
+        function filtrarLista() {
+            const txt = document.getElementById('filtro').value.toLowerCase();
+            renderLista(g_residentes.filter(r => r.nombre.toLowerCase().includes(txt)));
+        }
+
+        function actualizarContador() {
+            const n = document.querySelectorAll('.chk-residente:checked').length;
+            document.getElementById('contador-sel').innerText = `${n} seleccionados`;
+        }
+
+        function guardar() {
+            const btn = document.getElementById('btn-guardar');
+            btn.disabled = true; btn.innerText = "Guardando...";
+
+            const ids = Array.from(document.querySelectorAll('.chk-residente:checked')).map(c => parseInt(c.value));
+
+            google.script.run
+                .withSuccessHandler(() => {
+                    btn.innerText = "Guardado ✅";
+                    setTimeout(() => google.script.host.close(), 1000);
+                })
+                .withFailureHandler((err) => {
+                    alert('Error: ' + err.message);
+                    btn.disabled = false; btn.innerText = "Guardar";
+                })
+                .guardarAsignacionDesdeSidebar(g_idCap, g_grupo, ids);
+        }
+
+        function onError(e) {
+            document.getElementById('loading').innerText = "Error: " + e.message;
+        }
+    </script>
+</body>
+
+</html>

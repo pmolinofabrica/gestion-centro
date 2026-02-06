@@ -1,0 +1,54 @@
+# ==============================================================================
+# ETL Configuration - Data Sources
+# ==============================================================================
+# Define las fuentes de datos para el proceso de migración.
+# Los paths son relativos al directorio raíz del proyecto.
+
+sources:
+  # Archivo Excel principal con datos legacy
+  legacy_file:
+    path: "query_supabase/registro cap 2025.xlsx"
+    sheets:
+      sessions: 0       # Hoja con sesiones y recursos asignados
+      attendance: 1     # Hoja con log de participación
+      exceptions: 2     # Hoja con excepciones (ausencias)
+
+# Configuración de columnas esperadas por hoja
+schema:
+  sessions:
+    date_column: "Fecha"
+    group_column: "Div. Grupo"
+    resource_prefix: "dispositivo"  # Detecta columnas que empiecen con este prefijo
+  
+  attendance:
+    date_column: "Fecha"
+    group_column: "Grupo"
+    entity_start_col: 5  # Las columnas de entidades empiezan desde el índice 5
+    exclude_columns: ["Total", "Finalizada", "Unnamed"]
+  
+  exceptions:
+    date_column: "Falto a cap"
+    entity_column: "Residente"
+
+# Reglas de transformación
+transformation:
+  # Corrección de fechas
+  date_fixes:
+    - find: "2026"
+      replace: "2025"
+  
+  # Valor por defecto si el grupo no se puede parsear
+  default_group: "A"
+  
+  # Tiempo asignado por defecto a cada recurso (minutos)
+  default_resource_time: 60
+
+# Configuración de salida
+output:
+  sql_file: "output/migration_output.sql"
+  log_file: "output/migration.log"
+  
+  # Opciones de SQL
+  sql_options:
+    use_transactions: true
+    on_conflict: "DO NOTHING"

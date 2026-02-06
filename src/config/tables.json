@@ -1,0 +1,145 @@
+{
+    "datos_personales": {
+        "sheet_columns": [
+            "nombre",
+            "apellido",
+            "dni",
+            "fecha_nacimiento",
+            "email",
+            "telefono",
+            "domicilio",
+            "fecha_baja",
+            "cohorte"
+        ],
+        "mandatory_fields": [
+            "nombre",
+            "apellido",
+            "dni",
+            "cohorte"
+        ],
+        "data_types": {
+            "nombre": "str",
+            "apellido": "str",
+            "dni": "str",
+            "fecha_nacimiento": "date",
+            "email": "str",
+            "telefono": "str",
+            "domicilio": "str",
+            "fecha_baja": "datetime",
+            "cohorte": "int"
+        },
+        "unique_key": "dni"
+    },
+    "turnos": {
+        "sheet_columns": [
+            "tipo_turno",
+            "descripcion",
+            "cant_horas_default",
+            "hora_inicio_default",
+            "hora_fin_default",
+            "solo_semana"
+        ],
+        "mandatory_fields": [
+            "tipo_turno",
+            "cant_horas_default"
+        ],
+        "data_types": {
+            "tipo_turno": "str",
+            "descripcion": "str",
+            "cant_horas_default": "float",
+            "hora_inicio_default": "time",
+            "hora_fin_default": "time",
+            "solo_semana": "bool"
+        },
+        "unique_key": "tipo_turno"
+    },
+    "planificacion": {
+        "sheet_columns": [
+            "fecha",
+            "tipo_turno",
+            "cant_residentes_plan",
+            "hora_inicio",
+            "hora_fin"
+        ],
+        "mandatory_fields": [
+            "fecha",
+            "tipo_turno",
+            "cant_residentes_plan"
+        ],
+        "data_types": {
+            "fecha": "date",
+            "tipo_turno": "str",
+            "cant_residentes_plan": "int",
+            "hosra_inicio": "time",
+            "hora_fin": "time"
+        },
+        "unique_key": [
+            "id_dia",
+            "id_turno"
+        ]
+    },
+    "convocatoria": {
+        "sheet_columns": [
+            "fecha",
+            "tipo_turno",
+            "agente",
+            "motivo_cambio"
+        ],
+        "mandatory_fields": [
+            "fecha",
+            "tipo_turno",
+            "agente"
+        ],
+        "data_types": {
+            "fecha": "date",
+            "tipo_turno": "str",
+            "agente": "str",
+            "motivo_cambio": "str"
+        },
+        "unique_key": [
+            "id_plani",
+            "id_agente"
+        ]
+    },
+    "dias": {
+        "sheet_columns": [
+            "fecha",
+            "descripcion_feriado",
+            "es_feriado"
+        ],
+        "mandatory_fields": [
+            "fecha",
+            "es_feriado"
+        ],
+        "data_types": {
+            "fecha": "date",
+            "descripcion_feriado": "str",
+            "es_feriado": "bool"
+        },
+        "unique_key": "fecha"
+    },
+    "saldos": {
+        "sheet_columns": [
+            "id_agente",
+            "mes",
+            "anio",
+            "horas_mes"
+        ],
+        "mandatory_fields": [
+            "id_agente",
+            "mes",
+            "anio"
+        ],
+        "data_types": {
+            "id_agente": "int",
+            "mes": "int",
+            "anio": "int",
+            "horas_mes": "float"
+        },
+        "unique_key": [
+            "id_agente",
+            "mes",
+            "anio"
+        ]
+    }
+}
