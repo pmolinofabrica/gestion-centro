@@ -3,7 +3,7 @@
 > Plataforma integral para la gestión del ciclo de vida del dato, desde la captura en interfaces de usuario hasta la persistencia en base de datos relacional.
 
 [![Stack](https://img.shields.io/badge/Stack-Google_Apps_Script_%7C_Supabase_%7C_Python-blue)]()
-[![Data Quality](https://img.shields.io/badge/Data_Quality-DAMA_Aligned-green)]()
+[![Data Quality](https://img.shields.io/badge/Data_Quality-green)]()
 
 ---
 
@@ -187,7 +187,3 @@ python scripts/run_migration.py
 Código disponible como referencia técnica para implementaciones similares.
 
 ---
-
-<p align="center">
-  <sub>Desarrollado aplicando principios de gestión de calidad del dato (DAMA-DMBOK).</sub>
-</p>
