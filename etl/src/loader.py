@@ -132,21 +132,23 @@ def remove_accents(input_str):
 
 def generate_participant_inserts(
     sessions_df: pd.DataFrame,
-    attendance_set: Set[Tuple[str, str]]
+    attendance_set: Set[Tuple[str, str, str]]
 ) -> str:
     """
     Genera bloque PL/pgSQL para asignación de participantes.
     
     Busca entidades por nombre y las vincula a sesiones.
+    Ahora respeta el GRUPO para evitar asignaciones duplicadas.
     """
     unique_sessions = sessions_df[['Fecha_Clean', 'Grupo_Clean']].drop_duplicates()
     
-    # Agrupar attendance por fecha
-    attendance_by_date = {}
-    for fecha, entity in attendance_set:
-        if fecha not in attendance_by_date:
-            attendance_by_date[fecha] = set()
-        attendance_by_date[fecha].add(entity)
+    # Agrupar attendance por keys: (fecha, grupo) -> set(entities)
+    attendance_map = {}
+    for fecha, grupo, entity in attendance_set:
+        key = (fecha, grupo)
+        if key not in attendance_map:
+            attendance_map[key] = set()
+        attendance_map[key].add(entity)
     
     sql_parts = ["-- ASIGNACIÓN DE PARTICIPANTES"]
     sql_parts.append("DO $$")
@@ -157,16 +159,18 @@ def generate_participant_inserts(
     
     for _, row in unique_sessions.iterrows():
         fecha = row['Fecha_Clean']
-        grupo = escape_sql(row['Grupo_Clean'])
+        grupo_raw = escape_sql(row['Grupo_Clean'])
         
-        entities = attendance_by_date.get(fecha, set())
+        # Buscar entidades que match fecha Y grupo
+        entities = attendance_map.get((fecha, grupo_raw), set())
+        
         if not entities:
             continue
         
-        sql_parts.append(f"  -- Sesión {fecha} Grupo {grupo} ({len(entities)} participantes)")
+        sql_parts.append(f"  -- Sesión {fecha} Grupo {grupo_raw} ({len(entities)} participantes)")
         sql_parts.append(f"  SELECT c.id_cap INTO v_cap_id FROM capacitaciones c")
         sql_parts.append(f"  JOIN dias d ON c.id_dia = d.id_dia")
-        sql_parts.append(f"  WHERE d.fecha = '{fecha}' AND c.grupo = '{grupo}';\n")
+        sql_parts.append(f"  WHERE d.fecha = '{fecha}' AND c.grupo = '{grupo_raw}';\n")
         sql_parts.append(f"  IF v_cap_id IS NOT NULL THEN")
         
         for entity in entities:
@@ -202,10 +206,20 @@ def generate_participant_inserts(
             sql_parts.append(f"    -- Participante: {entity} (Buscado como: {entity_simple})")
             sql_parts.append(f"    SELECT id_agente INTO v_entity_id FROM datos_personales")
             sql_parts.append(f"    WHERE {match_sql} LIMIT 1;")
+            
             sql_parts.append(f"    IF v_entity_id IS NOT NULL THEN")
-            sql_parts.append(f"      INSERT INTO capacitaciones_participantes (id_cap, id_agente)")
-            sql_parts.append(f"      VALUES (v_cap_id, v_entity_id)")
-            sql_parts.append(f"      ON CONFLICT (id_cap, id_agente) DO NOTHING;")
+            # VERIFICACIÓN ESTRICTA: Una persona = Un grupo por día
+            # Si ya existe una asignación para este agente en ESTA fecha (en cualquier grupo), saltar.
+            sql_parts.append(f"      PERFORM 1 FROM capacitaciones_participantes cp")
+            sql_parts.append(f"      JOIN capacitaciones c2 ON cp.id_cap = c2.id_cap")
+            sql_parts.append(f"      JOIN dias d2 ON c2.id_dia = d2.id_dia")
+            sql_parts.append(f"      WHERE d2.fecha = '{fecha}' AND cp.id_agente = v_entity_id;")
+            
+            sql_parts.append(f"      IF NOT FOUND THEN")
+            sql_parts.append(f"        INSERT INTO capacitaciones_participantes (id_cap, id_agente, asistio)")
+            sql_parts.append(f"        VALUES (v_cap_id, v_entity_id, true)")
+            sql_parts.append(f"        ON CONFLICT (id_cap, id_agente) DO NOTHING;")
+            sql_parts.append(f"      END IF;")
             sql_parts.append(f"    END IF;\n")
         
         sql_parts.append(f"  END IF;\n")

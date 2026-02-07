@@ -34,5 +34,8 @@ archive/ai_docs/
 query_supabase/*.xlsx
 query_supabase/*.csv
 
-# Data directory
+# Ignorar carpetas pesadas
 data/
+backup/
+node_modules/
+__pycache__/

@@ -193,7 +193,20 @@ def extract_attendance(
         if not any(pat in col_str for pat in exclude_patterns):
             entity_cols.append(col)
     
-    # Usar SET para unicidad (Fecha, Entity) - ignorar grupo
+    # Parser dinámico de grupos (reusado)
+    def parse_group(val):
+        if pd.isna(val):
+            return default_group
+        s = str(val).upper().strip()
+        match = re.search(r'[\s-]([A-C])(?:\s|$|COMPLETA)', s)
+        if match:
+            return match.group(1)
+        return default_group
+
+    df['Grupo_Clean'] = df[group_column].apply(parse_group)
+
+    # Usar SET para pasar todos los registros (Fecha, Grupo, Entity)
+    # La deduplicación se hace en SQL (loader.py) para elegir el mejor grupo disponible
     attendance = set()
     filtered_count = 0
     
@@ -205,13 +218,16 @@ def extract_attendance(
             if val in ['1', 'true', '1.0']:
                 entity = str(col).strip()
                 fecha = row['Fecha_Clean']
+                grupo = row['Grupo_Clean']
                 
                 # Filtrar por excepciones
                 if (entity, fecha) in exception_set:
                     filtered_count += 1
                     continue
                 
-                attendance.add((fecha, entity))
+                attendance.add((fecha, grupo, entity))
     
     print(f"   Filtradas por excepción: {filtered_count}")
+    print(f"   Registros de asistencia (incluyendo multi-grupo): {len(attendance)}")
+        
     return attendance

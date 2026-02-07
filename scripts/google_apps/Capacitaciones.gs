@@ -414,20 +414,20 @@ function renderizarMatrizCertificaciones() {
   const sheet = getOrCreateSheet_(HOJA_CERT);
   sheet.clear();
   
-  // Usar RPC Security Definer para evitar problemas de permisos con tablas unidas (como 'dias')
-  const resultRPC = callRpc('rpc_obtener_vista_capacitados', {});
+  // Usar nuevo RPC que devuelve datos agregados (< 1000 filas)
+  const resultRPC = callRpc('rpc_obtener_matriz_certificaciones', {});
   
   if (!resultRPC.success) {
-       SpreadsheetApp.getUi().alert('Error obteniendo vista: ' + resultRPC.error);
+       SpreadsheetApp.getUi().alert('Error obteniendo matriz: ' + resultRPC.error);
        Logger.log(resultRPC.error);
        return;
   }
   
   const certificaciones = resultRPC.data;
-  Logger.log('Registros encontrados: ' + (certificaciones ? certificaciones.length : 0));
+  Logger.log('Registros encontrados (agregados): ' + (certificaciones ? certificaciones.length : 0));
   
   if (!certificaciones || certificaciones.length === 0) {
-      SpreadsheetApp.getUi().alert('No hay certificaciones registradas. Asegúrate de haber ejecutado el script CORREGIR_VISTA_CAPACITADOS.sql');
+      SpreadsheetApp.getUi().alert('No hay certificaciones registradas.');
       return;
   }
   
@@ -439,17 +439,11 @@ function renderizarMatrizCertificaciones() {
   dispositivos.sort((a, b) => a.nombre.localeCompare(b.nombre));
   residentes.sort((a, b) => a.nombre.localeCompare(b.nombre));
   
-  // Crear mapa de certificaciones con fechas
+  // Crear mapa de certificaciones con fechas (ya viene agregado del RPC)
   const mapCert = new Map();
   certificaciones.forEach(c => {
-      if (c.asistio === true || c.asistio === 1) {
-          const key = `${c.id_dispositivo}-${c.id_agente}`;
-          // Si hay múltiples capacitaciones, guardar la más reciente
-          const fechaActual = mapCert.get(key);
-          if (!fechaActual || new Date(c.fecha_capacitacion) > new Date(fechaActual)) {
-              mapCert.set(key, c.fecha_capacitacion);
-          }
-      }
+      const key = `${c.id_dispositivo}-${c.id_agente}`;
+      mapCert.set(key, c.fecha_mas_reciente);
   });
   
   // Headers
