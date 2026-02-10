@@ -128,12 +128,24 @@ function syncTurnos() {
       continue;
     }
     
+    // Helper para formatear hora (convierte Date de Sheets a HH:MM string)
+    const formatTime_ = (val) => {
+      if (!val) return null;
+      if (val instanceof Date) {
+        const h = String(val.getHours()).padStart(2, '0');
+        const m = String(val.getMinutes()).padStart(2, '0');
+        return h + ':' + m;
+      }
+      const s = String(val).trim();
+      return s === '' ? null : s;
+    };
+    
     // Preparar payload con nombres correctos
     const payload = {
       tipo_turno: String(record.tipo_turno).trim(),
       descripcion: record.descripcion || null,
-      hora_inicio: record.hora_inicio || null,
-      hora_fin: record.hora_fin || null,
+      hora_inicio: formatTime_(record.hora_inicio),
+      hora_fin: formatTime_(record.hora_fin),
       cant_horas: record.cant_horas ? parseFloat(record.cant_horas) : null,
       solo_semana: record.solo_semana === true || record.solo_semana === 'TRUE',
       activo: record.activo === true || record.activo === 'TRUE' || record.activo === undefined

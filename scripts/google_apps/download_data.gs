@@ -19,7 +19,7 @@
  */
 function downloadPlanificacion() {
   // Traer planificación completa
-  const data = fetchAll('planificacion', 'id_plani,id_dia,id_turno,cant_residentes_plan,cant_visit,hora_inicio,hora_fin,cant_horas');
+  const data = fetchAll('planificacion', 'id_plani,id_dia,id_turno,cant_residentes_plan,cant_visit,hora_inicio,hora_fin,cant_horas,lugar,plani_notas,grupo');
   
   if (!data || data.length === 0) {
     SpreadsheetApp.getUi().alert('⚠️ No hay planificación en Supabase');
@@ -53,7 +53,7 @@ function downloadPlanificacion() {
   
   const sheet = getOrCreateSheet_('PLANIFICACION');
   const headers = ['sincronizar', 'id_plani', 'fecha', 'anio', 'tipo_turno', 'cant_residentes_plan', 
-                   'cant_visit', 'hora_inicio', 'hora_fin', 'cant_horas', 'sync_status'];
+                   'cant_visit', 'hora_inicio', 'hora_fin', 'cant_horas', 'lugar', 'grupo', 'plani_notas', 'sync_status'];
   
   const rows = filteredData.map(r => {
     const diaInfo = idDiaData[r.id_dia] || {};
@@ -68,6 +68,9 @@ function downloadPlanificacion() {
       r.hora_inicio || '',
       r.hora_fin || '',
       r.cant_horas || '',
+      r.lugar || '',
+      r.grupo || '',
+      r.plani_notas || '',
       '✅' // sync_status default OK en descarga
     ];
   });

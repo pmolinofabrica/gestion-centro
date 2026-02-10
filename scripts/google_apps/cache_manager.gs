@@ -36,7 +36,7 @@ const CACHE_CONFIG = {
   
   // Datos semi-dinámicos (refrescar cada hora o al iniciar trabajo)
   '_CACHE_PLANI_ANIO': {
-    source: 'vista_planificacion_anio',  // Usa la vista optimizada
+    source: 'planificacion',  // CAMBIO TEMPORAL: Usar tabla directa para asegurar campo 'lugar'
     select: '*',
     filter: null,  // Se aplica año_activo dinámicamente
     ttlMinutes: 60,  // 1 hora
@@ -76,13 +76,23 @@ function refreshCache(cacheName) {
     ? fetchAllWithFilters(config.source, config.select, filters)
     : fetchAll(config.source, config.select);
   
+  // ⚠️ SIEMPRE limpiar la hoja de caché antes de escribir (aunque no haya datos)
+  // Esto evita que queden datos viejos de otro año/filtro
+  const sheet = getOrCreateCacheSheet_(cacheName, config.hidden);
+  sheet.clear();
+  
   if (!data || data.length === 0) {
-    Logger.log('⚠️ Caché ' + cacheName + ' vacía (0 registros)');
+    Logger.log('⚠️ Caché ' + cacheName + ' vacía (0 registros para filtros actuales)');
+    // Guardar metadata indicando que está vacía pero actualizada
+    setCacheMetadata_(cacheName, {
+      lastRefresh: new Date().toISOString(),
+      recordCount: 0,
+      ttlMinutes: config.ttlMinutes
+    });
     return 0;
   }
   
-  // Escribir a hoja oculta
-  const sheet = getOrCreateCacheSheet_(cacheName, config.hidden);
+  // Escribir datos a hoja
   writeCacheData_(sheet, data);
   
   // Guardar metadata de última actualización

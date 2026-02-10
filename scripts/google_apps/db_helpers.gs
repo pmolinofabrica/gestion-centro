@@ -1,30 +1,246 @@
 /**
- * HELPERS DB - Funciones para interacción con Supabase
- * Generado para Módulo Asignaciones 2026
+ * HELPERS DB - Capa de acceso a datos (Data Access Layer)
+ * Funciones centralizadas para interacción con Supabase REST API
+ * 
+ * Este archivo es el ÚNICO punto de contacto con Supabase.
+ * Todos los demás archivos deben usar estas funciones.
+ * 
+ * @author Pablo (Data Analyst)
+ * @version 3.0.0 - Refactored: single source of truth
  */
+
+// ============================================================================
+// CONFIGURACIÓN Y AUTENTICACIÓN
+// ============================================================================
+
+/**
+ * Obtiene configuración de Supabase desde PropertiesService
+ * Soporta ambos nombres de propiedad: SUPABASE_SERVICE_KEY y SUPABASE_KEY
+ * @private
+ * @returns {Object} {url, key}
+ */
+function getSupabaseConfig_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const url = props.getProperty('SUPABASE_URL');
+    // Intentar SERVICE_KEY primero (más privilegios), luego KEY
+    const key = props.getProperty('SUPABASE_SERVICE_KEY') 
+             || props.getProperty('SUPABASE_KEY');
+    if (url && key) return { url: url, key: key };
+  } catch (e) {
+    // Ignorar si falla
+  }
+
+  // Fallback a placeholders
+  return {
+    url: 'https://TU-PROYECTO.supabase.co',
+    key: 'TU-ANON-KEY-AQUI' 
+  };
+}
+
+/**
+ * Construye headers estándar para Supabase REST API
+ * @private
+ * @param {string} apiKey - API Key de Supabase
+ * @returns {Object} Headers HTTP
+ */
+function buildHeaders_(apiKey) {
+  return {
+    'apikey': apiKey,
+    'Authorization': 'Bearer ' + apiKey,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=representation'
+  };
+}
+
+// ============================================================================
+// FETCH: LECTURA DE DATOS (con paginación automática)
+// ============================================================================
+
+/**
+ * Obtiene todos los registros de una tabla con filtros y paginación automática.
+ * Supabase limita a 1000 registros por request. Esta función pagina transparentemente.
+ * 
+ * Soporta filtros con operadores:
+ *   - Igualdad: { campo: valor }
+ *   - Operador objeto: { campo: { operator: 'gte', value: '2025-01-01' } }
+ *   - Sufijo convención: { fecha_gte: '2025-01-01', fecha_lt: '2026-01-01' }
+ * 
+ * @param {string} table - Nombre de la tabla o vista
+ * @param {string} select - Columnas a seleccionar (default: *)
+ * @param {Object} filters - Filtros opcionales
+ * @returns {Array} Todos los registros
+ */
+function fetchAllWithFilters(table, select, filters) {
+  const PAGE_SIZE = 1000;
+  let allData = [];
+  let offset = 0;
+  let hasMore = true;
+  
+  // Construir query base con filtros
+  let queryBase = '?select=' + (select || '*');
+  
+  if (filters) {
+    Object.keys(filters).forEach(function(key) {
+      var val = filters[key];
+      if (val !== null && val !== undefined) {
+        // Soporte para operador objeto: { operator: 'gte', value: '2025-01-01' }
+        if (typeof val === 'object' && val.operator && val.value) {
+          queryBase += '&' + key + '=' + val.operator + '.' + val.value;
+        // Soporte para sufijo _gte / _lt
+        } else if (key.endsWith('_gte')) {
+          queryBase += '&' + key.replace('_gte', '') + '=gte.' + val;
+        } else if (key.endsWith('_lt')) {
+          queryBase += '&' + key.replace('_lt', '') + '=lt.' + val;
+        } else {
+          // Default: igualdad
+          queryBase += '&' + key + '=eq.' + val;
+        }
+      }
+    });
+  }
+  
+  Logger.log('📥 Fetching ' + table + '...');
+  
+  while (hasMore) {
+    var rangeStart = offset;
+    var rangeEnd = offset + PAGE_SIZE - 1;
+    
+    var config = getSupabaseConfig_();
+    var url = config.url + '/rest/v1/' + table + queryBase;
+    
+    var options = {
+      method: 'GET',
+      headers: Object.assign(buildHeaders_(config.key), {
+        'Range': rangeStart + '-' + rangeEnd
+      }),
+      muteHttpExceptions: true
+    };
+    
+    var response = UrlFetchApp.fetch(url, options);
+    var code = response.getResponseCode();
+    var body = response.getContentText();
+    
+    if (code === 200 || code === 206) {  // 206 = Partial Content
+      var pageData = JSON.parse(body);
+      allData = allData.concat(pageData);
+      
+      // Verificar si hay más datos via Content-Range header
+      var contentRange = response.getHeaders()['Content-Range'];
+      if (contentRange) {
+        // Format: "0-999/3000" o "0-999/*"
+        var match = contentRange.match(/(\d+)-(\d+)\/(\d+|\*)/);
+        if (match) {
+          var end = parseInt(match[2]);
+          var total = match[3] === '*' ? Infinity : parseInt(match[3]);
+          hasMore = (end + 1) < total;
+          offset = end + 1;
+          
+          if (hasMore) {
+            Logger.log('   📄 Página ' + Math.floor(offset / PAGE_SIZE) + ': ' + pageData.length + ' registros');
+          }
+        } else {
+          hasMore = false;
+        }
+      } else {
+        // Sin Content-Range, asumir que es todo
+        hasMore = false;
+      }
+      
+      // Protección: si una página viene vacía, parar
+      if (pageData.length === 0) {
+        hasMore = false;
+      }
+      
+    } else {
+      Logger.log('❌ Error en ' + table + ': ' + code + ' - ' + body);
+      hasMore = false;
+    }
+  }
+  
+  Logger.log('✅ ' + table + ': ' + allData.length + ' registros totales');
+  return allData;
+}
+
+/**
+ * Obtiene todos los registros de una tabla (wrapper sin filtros)
+ * @param {string} table - Nombre de la tabla
+ * @param {string} select - Columnas a seleccionar (default: *)
+ * @returns {Array} Todos los registros
+ */
+function fetchAll(table, select) {
+  return fetchAllWithFilters(table, select, null);
+}
+
+/**
+ * Obtiene un solo registro
+ * @param {string} table - Nombre de la tabla
+ * @param {string} select - Columnas a seleccionar
+ * @param {Object} filters - Filtros para buscar
+ * @returns {Object|null} Primer registro encontrado o null
+ */
+function fetchOne(table, select, filters) {
+  var res = fetchAllWithFilters(table, select, filters);
+  return (res && res.length > 0) ? res[0] : null;
+}
+
+// ============================================================================
+// WRITE: ESCRITURA DE DATOS
+// ============================================================================
+
+/**
+ * Fetch genérico a Supabase REST API (CRUD)
+ * @param {string} table - Nombre de la tabla
+ * @param {string} query - Query string (ej: "?select=*&dni=eq.12345678")
+ * @param {string} method - GET, POST, PATCH, DELETE
+ * @param {Object} payload - Datos para POST/PATCH (opcional)
+ * @returns {Object} { success, code, data }
+ */
+function supabaseRequest_(table, query, method, payload) {
+  var config = getSupabaseConfig_();
+  var url = config.url + '/rest/v1/' + table + (query || '');
+  
+  var options = {
+    method: method || 'GET',
+    headers: buildHeaders_(config.key),
+    muteHttpExceptions: true
+  };
+  
+  if (payload && (method === 'POST' || method === 'PATCH')) {
+    options.payload = JSON.stringify(payload);
+  }
+  
+  var response = UrlFetchApp.fetch(url, options);
+  var code = response.getResponseCode();
+  var body = response.getContentText();
+  
+  return {
+    success: code >= 200 && code < 300,
+    code: code,
+    data: body ? JSON.parse(body) : null
+  };
+}
 
 /**
  * Inserta una fila nueva (POST estándar)
+ * @param {string} table - Nombre de la tabla
+ * @param {Object} record - Datos a insertar
+ * @returns {Object} { success, data/error }
  */
 function insertRow(table, record) {
-  const config = getSupabaseConfig_(); // Debe estar en secrets.gs o definido abajo
-  const url = config.url + '/rest/v1/' + table;
+  var config = getSupabaseConfig_();
+  var url = config.url + '/rest/v1/' + table;
   
-  const options = {
+  var options = {
     method: 'POST',
-    headers: {
-      'apikey': config.key,
-      'Authorization': 'Bearer ' + config.key,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation'
-    },
+    headers: buildHeaders_(config.key),
     payload: JSON.stringify(record),
     muteHttpExceptions: true
   };
   
-  const response = UrlFetchApp.fetch(url, options);
-  const code = response.getResponseCode();
-  const body = response.getContentText();
+  var response = UrlFetchApp.fetch(url, options);
+  var code = response.getResponseCode();
+  var body = response.getContentText();
   
   if (code >= 200 && code < 300) {
     return { success: true, data: JSON.parse(body) };
@@ -34,15 +250,57 @@ function insertRow(table, record) {
 }
 
 /**
+ * Upsert genérico (insert o update por unique key)
+ * @param {string} table - Nombre de la tabla
+ * @param {Object} record - Datos a insertar/actualizar
+ * @param {string|Array} uniqueKey - Columna(s) de constraint único
+ * @returns {Object} { success, error? }
+ */
+function upsertRecord(table, record, uniqueKey) {
+  var config = getSupabaseConfig_();
+  
+  var conflictClause = '';
+  if (Array.isArray(uniqueKey)) {
+    conflictClause = uniqueKey.join(',');
+  } else {
+    conflictClause = uniqueKey;
+  }
+  
+  var url = config.url + '/rest/v1/' + table + 
+    (conflictClause ? '?on_conflict=' + conflictClause : '');
+  
+  var options = {
+    method: 'POST',
+    headers: buildHeaders_(config.key),
+    payload: JSON.stringify(record),
+    muteHttpExceptions: true
+  };
+  
+  // Header para upsert
+  options.headers['Prefer'] = 'resolution=merge-duplicates';
+  
+  var response = UrlFetchApp.fetch(url, options);
+  var code = response.getResponseCode();
+  var body = response.getContentText();
+  
+  if (code >= 200 && code < 300) {
+    return { success: true };
+  } else {
+    return { success: false, error: 'HTTP ' + code + ': ' + body.substring(0, 100) };
+  }
+}
+
+/**
  * Llama a una función RPC de PostgreSQL (POST /rpc/...)
- * @param {string} rpcName - Nombre de la función SQL (ej: 'rpc_importar_calendario')
- * @param {Object} params - Objeto con los parámetros (ej: { payload: [...] })
+ * @param {string} rpcName - Nombre de la función SQL
+ * @param {Object} params - Parámetros
+ * @returns {Object} { success, data/error }
  */
 function callRpc(rpcName, params) {
-  const config = getSupabaseConfig_();
-  const url = config.url + '/rest/v1/rpc/' + rpcName;
+  var config = getSupabaseConfig_();
+  var url = config.url + '/rest/v1/rpc/' + rpcName;
   
-  const options = {
+  var options = {
     method: 'POST',
     headers: {
       'apikey': config.key,
@@ -53,99 +311,47 @@ function callRpc(rpcName, params) {
     muteHttpExceptions: true
   };
   
-  const response = UrlFetchApp.fetch(url, options);
-  const code = response.getResponseCode();
-  const body = response.getContentText();
+  var response = UrlFetchApp.fetch(url, options);
+  var code = response.getResponseCode();
+  var body = response.getContentText();
   
   if (code >= 200 && code < 300) {
-    // Si returns void, body puede ser vacío. Si returns json, parseamos.
     try {
-        return { success: true, data: body ? JSON.parse(body) : null };
+      return { success: true, data: body ? JSON.parse(body) : null };
     } catch(e) {
-        return { success: true, data: body }; // Texto plano?
+      return { success: true, data: body };
     }
   } else {
     return { success: false, error: 'RPC Error ' + code + ': ' + body };
   }
 }
 
+// ============================================================================
+// UTILIDADES COMPARTIDAS
+// ============================================================================
+
 /**
- * Obtiene registros con filtros (GET)
+ * Obtiene o crea una hoja de cálculo por nombre
+ * @param {string} name - Nombre de la hoja
+ * @returns {Sheet} Hoja de Google Sheets
  */
-function fetchAllWithFilters(table, select, filters) {
-  const config = getSupabaseConfig_();
-  let query = '?select=' + (select || '*');
-  
-  if (filters) {
-    Object.keys(filters).forEach(key => {
-      const val = filters[key];
-      if (val !== null && val !== undefined) {
-        // Soporte para operadores: { fecha: { operator: 'gte', value: '2025-01-01' } }
-        if (typeof val === 'object' && val.operator && val.value) {
-            query += '&' + key + '=' + val.operator + '.' + val.value;
-        } else {
-            // Comportamiento default: igualdad
-            query += '&' + key + '=eq.' + val;
-        }
-      }
-    });
+function getOrCreateSheet_(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
   }
-  
-  const url = config.url + '/rest/v1/' + table + query;
-  
-  const options = {
-    method: 'GET',
-    headers: {
-      'apikey': config.key,
-      'Authorization': 'Bearer ' + config.key
-    },
-    muteHttpExceptions: true
-  };
-  
-  const response = UrlFetchApp.fetch(url, options);
-  const code = response.getResponseCode();
-  const body = response.getContentText();
-  
-  if (code === 200) {
-    return JSON.parse(body);
-  } else {
-    Logger.log('Error fetching ' + table + ': ' + body);
-    return [];
-  }
+  return sheet;
 }
 
 /**
- * Obtiene un solo registro
+ * Formatea una fecha a YYYY-MM-DD
+ * @param {Date|string} dateValue - Fecha a formatear
+ * @returns {string} Fecha formateada
  */
-function fetchOne(table, select, filters) {
-  const res = fetchAllWithFilters(table, select, filters);
-  return (res && res.length > 0) ? res[0] : null;
-}
-
-/**
- * Obtiene todos los registros (Wrapper para compatibilidad)
- */
-function fetchAll(table, select) {
-  return fetchAllWithFilters(table, select, null);
-}
-
-/**
- * Obtiene configuración de secretos (Fallback si no existe secrets.gs)
- */
-function getSupabaseConfig_() {
-  // Intenta leer de PropertiesService primero
-  try {
-    const props = PropertiesService.getScriptProperties();
-    const url = props.getProperty('SUPABASE_URL');
-    const key = props.getProperty('SUPABASE_KEY');
-    if (url && key) return { url: url, key: key };
-  } catch (e) {
-    // Ignorar si falla
+function formatDate_(dateValue) {
+  if (dateValue instanceof Date) {
+    return Utilities.formatDate(dateValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
-
-  // Fallback a placeholders (El usuario debe editar esto si no usa PropertiesService)
-  return {
-    url: 'https://TU-PROYECTO.supabase.co',
-    key: 'TU-ANON-KEY-AQUI' 
-  };
+  return String(dateValue);
 }

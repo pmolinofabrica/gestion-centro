@@ -40,10 +40,7 @@ const TABLE_CONFIG = {
   turnos: {
     unique_key: 'tipo_turno',
     mandatory: ['tipo_turno', 'cant_horas_default'],
-    allowed_values: {
-      tipo_turno: ['mañana', 'tarde', 'intermedio', 'capacitacion', 
-                   'apertura_publico_corto', 'apertura_publico_largo', 'descanso']
-    },
+    // allowed_values se obtienen dinámicamente desde Supabase
     types: {
       id_turno: 'int',
       tipo_turno: 'str',
@@ -53,7 +50,8 @@ const TABLE_CONFIG = {
       cant_horas_default: 'float',
       solo_fines_semana: 'bool',
       solo_semana: 'bool',
-      activo: 'bool'
+      activo: 'bool',
+      color: 'str'
     }
   },
   
@@ -87,7 +85,10 @@ const TABLE_CONFIG = {
       usa_horario_custom: 'bool',
       motivo_horario_custom: 'str',
       cant_residentes_plan: 'int',
-      cant_visit: 'int'
+      cant_visit: 'int',
+      lugar: 'str',
+      plani_notas: 'str',
+      grupo: 'str'
     }
   },
   
