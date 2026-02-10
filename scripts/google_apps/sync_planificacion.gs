@@ -77,8 +77,19 @@ function syncPlanificacion() {
   const fechaToIdDia = {};
   diasMap.forEach(d => { fechaToIdDia[d.fecha] = d.id_dia; });
   
+  // Helper para normalizar texto (quita tildes y pasa a minúsculas)
+  const normalizeText = (str) => {
+    return String(str).trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  };
+  
   const tipoToIdTurno = {};
-  turnosMap.forEach(t => { tipoToIdTurno[t.tipo_turno] = t.id_turno; });
+  const tipoOriginal = {};  // Para guardar el nombre original
+  turnosMap.forEach(t => { 
+    const key = normalizeText(t.tipo_turno);
+    tipoToIdTurno[key] = t.id_turno;
+    tipoOriginal[key] = t.tipo_turno;
+  });
   
   // Asegurar columna sync_status
   let statusColIdx = headers.indexOf('sync_status');
@@ -129,12 +140,25 @@ function syncPlanificacion() {
     
     let id_turno = record.id_turno;
     if (!id_turno && record.tipo_turno) {
-        id_turno = tipoToIdTurno[String(record.tipo_turno).trim()];
+        const keyNorm = normalizeText(record.tipo_turno);
+        id_turno = tipoToIdTurno[keyNorm];
     }
     
-    // Validar mandatorios
-    if (!id_dia || !id_turno) {
-       sheet.getRange(rowNum, statusCol).setValue('❌ Falta fecha o tipo_turno válido');
+    // Validar mandatorios con mensaje detallado
+    if (!id_dia && !id_turno) {
+       sheet.getRange(rowNum, statusCol).setValue('❌ Falta fecha Y tipo_turno válido');
+       errorCount++;
+       return;
+    }
+    if (!id_dia) {
+       const fechaVal = record.fecha ? formatDate_(record.fecha) : '(vacío)';
+       sheet.getRange(rowNum, statusCol).setValue('❌ Fecha no existe en DB: ' + fechaVal);
+       errorCount++;
+       return;
+    }
+    if (!id_turno) {
+       const tipoVal = record.tipo_turno ? String(record.tipo_turno).trim() : '(vacío)';
+       sheet.getRange(rowNum, statusCol).setValue('❌ Tipo turno no existe en DB: ' + tipoVal);
        errorCount++;
        return;
     }
@@ -146,7 +170,10 @@ function syncPlanificacion() {
       cant_visit: record.cant_visit || 0,
       hora_inicio: formatTime_(record.hora_inicio),
       hora_fin: formatTime_(record.hora_fin),
-      cant_horas: record.cant_horas || null
+      cant_horas: record.cant_horas || null,
+      lugar: record.lugar || null,
+      grupo: record.grupo || null,
+      plani_notas: record.plani_notas || null
     };
     
     // UPSERT (unique key: id_dia, id_turno)

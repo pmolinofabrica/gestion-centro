@@ -8,7 +8,7 @@
 
 DROP FUNCTION IF EXISTS rpc_obtener_matriz_certificaciones();
 
-CREATE OR REPLACE FUNCTION rpc_obtener_matriz_certificaciones()
+CREATE OR REPLACE FUNCTION rpc_obtener_matriz_certificaciones(anio_filtro INT DEFAULT NULL)
 RETURNS TABLE (
     id_dispositivo INT,
     nombre_dispositivo VARCHAR,
@@ -35,6 +35,7 @@ AS $$
     JOIN dias d ON cap.id_dia = d.id_dia
     WHERE dp.activo = true
       AND cap_part.asistio = true  -- Solo los que asistieron
+      AND (anio_filtro IS NULL OR d.anio = anio_filtro) -- Filtro opcional por año
     GROUP BY 
         disp.id_dispositivo, 
         disp.nombre_dispositivo, 
@@ -45,7 +46,7 @@ AS $$
 $$;
 
 -- Otorgar permisos
-GRANT EXECUTE ON FUNCTION rpc_obtener_matriz_certificaciones() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_obtener_matriz_certificaciones(int) TO anon, authenticated;
 
 -- ============================================================
 -- Verificación: Esta consulta debería devolver ~800 filas max

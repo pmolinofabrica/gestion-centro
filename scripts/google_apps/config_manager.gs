@@ -99,6 +99,23 @@ function setConfigValue(param, value) {
     if (data[i][0] === param) {
       sheet.getRange(i + 1, 2).setValue(value);
       Logger.log('✅ ' + param + ' = ' + value);
+      
+      // Invalida cachés si cambia la configuración
+      const props = PropertiesService.getScriptProperties();
+      
+      if (param === 'año_activo') {
+        // Al cambiar el año, la planificación del año anterior ya no sirve
+        props.deleteProperty('CACHE_META__CACHE_PLANI_ANIO');
+        // También invalidamos la convocatoria (aunque esta no usa caché persistente igual, mejor prevenir)
+        Logger.log('🔄 Caché _CACHE_PLANI_ANIO invalidada por cambio de año');
+      }
+      
+      if (param === 'cohorte_activa') {
+        // Al cambiar cohorte, la lista de personal filtrada puede cambiar
+        props.deleteProperty('CACHE_META__CACHE_PERSONAL');
+        Logger.log('🔄 Caché _CACHE_PERSONAL invalidada por cambio de cohorte');
+      }
+      
       return;
     }
   }
