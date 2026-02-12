@@ -4,6 +4,7 @@ config/*.json
 FASE3_migracion_datos.py
 
 venv/
+.venv/
 __pycache__/
 *.pyc
 
