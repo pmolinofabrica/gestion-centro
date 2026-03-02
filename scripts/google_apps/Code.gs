@@ -83,17 +83,53 @@ function testConnection() {
  * Carga datos_personales en hoja "datos_residentes" (todas las columnas)
  */
 function loadDatosPersonales() {
-  // Fetch ALL columns
-  var data = fetchAll('datos_personales', '*');
-  if (data.length === 0) return;
+  var sheet = getOrCreateSheet_('datos_personales');
+
+  // Fetch ALL columns + Adicionales joined
+  // Supabase syntax for join: table(*)
+  var data = fetchAll('datos_personales', '*, datos_personales_adicionales(*)');
+  
+  if (data.length === 0) {
+    sheet.clear();
+    SpreadsheetApp.getUi().alert('ℹ️ No hay datos en la tabla datos_personales (Tabla vacía).');
+    return;
+  }
+
+  // FLATTEN DATA: Mover campos sub-objeto al nivel principal
+  // Campos extra: referencia_emergencia, nombre_preferido, pronombres, formacion_extra, info_extra
+  var flattenedData = data.map(function(row) {
+    var extra = row.datos_personales_adicionales;
+    
+    // Si es array (relación 1:N detectada) o null
+    var extraObj = {};
+    if (extra) {
+      if (Array.isArray(extra)) {
+        extraObj = extra.length > 0 ? extra[0] : {};
+      } else if (typeof extra === 'object') {
+        extraObj = extra;
+      }
+    }
+    
+    // Merge properties
+    row['referencia_emergencia'] = extraObj.referencia_emergencia || '';
+    row['nombre_preferido'] = extraObj.nombre_preferido || '';
+    row['pronombres'] = extraObj.pronombres || '';
+    row['formacion_extra'] = extraObj.formacion_extra || '';
+    row['info_extra'] = extraObj.info_extra || '';
+    
+    // Limpiar el objeto anidado para que no salga como [Object object] en la celda
+    delete row.datos_personales_adicionales;
+    
+    return row;
+  });
   
   // Filtrar por cohorte si está configurada
-  var filteredData = data;
+  var filteredData = flattenedData;
   try {
     var filters = getActiveFilters();
     if (filters && filters.cohorte_activa) {
       var cohorteStr = String(filters.cohorte_activa).trim();
-      filteredData = data.filter(function(p) {
+      filteredData = flattenedData.filter(function(p) {
         return String(p.cohorte).trim() === cohorteStr;
       });
       Logger.log('👥 Filtrando personal por cohorte: ' + cohorteStr + ' (' + filteredData.length + '/' + data.length + ')');
@@ -101,29 +137,45 @@ function loadDatosPersonales() {
   } catch (e) {
     Logger.log('⚠️ No se pudieron cargar filtros: ' + e.message);
   }
-  
-  var sheet = getOrCreateSheet_('datos_residentes');
-  
-  if (filteredData.length === 0) {
-    SpreadsheetApp.getUi().alert('ℹ️ No hay datos de residentes.');
-    return;
-  }
-  
-  var headers = Object.keys(filteredData[0]);
-  var rows = filteredData.map(function(r) {
-    return headers.map(function(h) { return r[h] || ''; });
+
+  // HEADERS: Usamos keys del primer registro (ya aplanado)
+  var headers = Object.keys(flattenedData[0]);
+
+  // REORDENAR HEADERS (Opcional - para UX)
+  // Mover ID y Activo al final o principio? Dejamos orden natural pero aseguramos orden consistente
+  // Una mejora simple es asegurar que 'apellido', 'nombre', 'dni' esten primero si existen.
+  var priorityCols = ['id_agente', 'apellido', 'nombre', 'dni', 'cohorte', 'activo'];
+  headers.sort(function(a, b) {
+    var idxA = priorityCols.indexOf(a);
+    var idxB = priorityCols.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return 0;
   });
-  
+
+  // LIMPIEZA INICIAL SIEMPRE
   sheet.clear();
   sheet.getRange(1, 1, 1, headers.length).setValues([headers])
     .setFontWeight('bold').setBackground('#4527a0').setFontColor('#ffffff');
-  if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
-  }
   sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, Math.min(headers.length, 10));
+
+  if (filteredData.length === 0) {
+    SpreadsheetApp.getUi().alert('ℹ️ No hay datos para los filtros seleccionados (La hoja ha sido limpiada).');
+    return;
+  }
   
-  SpreadsheetApp.getUi().alert('✅ datos_residentes actualizada: ' + rows.length + ' registros');
+  var rows = filteredData.map(function(r) {
+    return headers.map(function(h) { 
+      var val = r[h];
+      return (val === null || val === undefined) ? '' : val; 
+    });
+  });
+  
+  sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  sheet.autoResizeColumns(1, Math.min(headers.length, 20));
+  
+  SpreadsheetApp.getUi().alert('✅ datos_personales actualizada: ' + rows.length + ' registros');
 }
 
 /**

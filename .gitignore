@@ -8,8 +8,13 @@ venv/
 __pycache__/
 *.pyc
 
+# Env files — ALL variants (critical: never commit secrets)
 .env
 *.env
+.env.local
+.env.*.local
+**/.env.local
+**/.env.*.local
 
 *.sqlite
 *.db
@@ -31,12 +36,55 @@ etl/src/__pycache__/
 archive/ai_docs/
 .ai_context/
 
-# Query exports (large data files)
+# Query exports and reports (may contain personal/schema data)
 query_supabase/*.xlsx
 query_supabase/*.csv
+query_supabase/*.txt
 
 # Ignorar carpetas pesadas
 data/
 backup/
 node_modules/
 __pycache__/
+
+# Test files (contain API access patterns - security risk)
+test*.js
+test*.py
+test_db.py
+test_pd_style.py
+analyze_2026_data.py
+
+# Infrastructure dumps and logs (may expose schema/data)
+schema_dump.txt
+streamlit.log
+*.log
+
+# Debug and diagnostic scripts (internal use only)
+scripts/python/debug_*.py
+scripts/python/diagnose_*.py
+scripts/python/inspect_*.py
+scripts/python/dump_*.py
+scripts/python/fix_*.py
+scripts/python/limpieza_*.py
+scripts/python/apply_migration_*.py
+scripts/python/check_agent_*.py
+scripts/python/check_*.py
+scripts/python/diagnostico_*.py
+scripts/python/sql_test.py
+scripts/python/update_schema_score.py
+scripts/python/prototipo_motor_mock.py
+
+# Operational/one-off scripts (internal use only)
+scripts/python/undo_*.py
+scripts/python/trace_*.py
+scripts/python/test_*.py
+scripts/python/migrate_*.py
+
+# Old motor versions (only v5 and supabase version are production)
+scripts/python/motor_asignacion_apertura.py
+scripts/python/motor_asignacion_apertura2.py
+scripts/python/motor_asignacion_apertura3.py
+scripts/python/motor_asignacion_apertura4.py
+
+# Streamlit prototype (internal)
+app_asignaciones/

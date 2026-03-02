@@ -176,9 +176,15 @@ function syncPlanificacion() {
       plani_notas: record.plani_notas || null
     };
     
-    // UPSERT (unique key: id_dia, id_turno)
+    // UPSERT (priority to id_plani to allow date changes without duplicating)
     try {
-      const res = upsertRecord('planificacion', payload, ['id_dia', 'id_turno']);
+      let res;
+      if (record.id_plani) {
+        payload.id_plani = record.id_plani;
+        res = upsertRecord('planificacion', payload, ['id_plani']);
+      } else {
+        res = upsertRecord('planificacion', payload, ['id_dia', 'id_turno', 'grupo']);
+      }
       
       if (res.success) {
         sheet.getRange(rowNum, statusCol).setValue('✅ OK ' + new Date().toLocaleTimeString());

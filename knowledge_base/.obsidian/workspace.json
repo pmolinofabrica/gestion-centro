@@ -1,0 +1,193 @@
+{
+  "main": {
+    "id": "22deaa97c82e4788",
+    "type": "split",
+    "children": [
+      {
+        "id": "0f4edd7ac5e67d5f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "6ed40b6be17fc74c",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "plan_capacitaciones_marzo.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "plan_capacitaciones_marzo"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "71f466a2572df71a",
+    "type": "split",
+    "children": [
+      {
+        "id": "e144fdbe32afe76d",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "01f3b514843e7a62",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Explorador de archivos"
+            }
+          },
+          {
+            "id": "56c6c3d0eb3bb159",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "62f5edbe603e440d",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "a9da126965daf9e2",
+    "type": "split",
+    "children": [
+      {
+        "id": "9416a715786afbb2",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "547f0912caae8963",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "matriz_rotacion_completa.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for matriz_rotacion_completa"
+            }
+          },
+          {
+            "id": "9ec2cd906ea2c812",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "matriz_rotacion_completa.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from matriz_rotacion_completa"
+            }
+          },
+          {
+            "id": "ecc6254f95b0ab2d",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "a0130c0ec5b3c913",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "02694b97f94503ab",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "matriz_rotacion_completa.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of matriz_rotacion_completa"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Abrir selector rápido": false,
+      "graph:Abrir vista gráfica": false,
+      "canvas:Crear nuevo lienzo": false,
+      "daily-notes:Abrir la nota de hoy": false,
+      "templates:Insertar plantilla": false,
+      "command-palette:Abrir paleta de comandos": false,
+      "bases:Crear nueva base": false
+    }
+  },
+  "active": "6ed40b6be17fc74c",
+  "lastOpenFiles": [
+    "GUIDE_HANDOVER_AI.md",
+    "matriz_rotacion_completa.md",
+    "plan_capacitaciones_marzo.md",
+    "matriz_rotacion.md"
+  ]
+}

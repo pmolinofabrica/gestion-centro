@@ -35,6 +35,19 @@ const TABLE_CONFIG = {
       cohorte: 'int'
     }
   },
+
+  datos_personales_adicionales: {
+    unique_key: 'id_agente',
+    mandatory: ['id_agente'],
+    types: {
+      id_agente: 'int',
+      referencia_emergencia: 'str',
+      nombre_preferido: 'str',
+      pronombres: 'str',
+      formacion_extra: 'str',
+      info_extra: 'str'
+    }
+  },
   
   // Reference Data
   turnos: {
@@ -73,7 +86,7 @@ const TABLE_CONFIG = {
   
   // Transactional Data
   planificacion: {
-    unique_key: ['id_dia', 'id_turno'],
+    unique_key: 'id_plani',
     mandatory: ['id_dia', 'id_turno', 'cant_residentes_plan'],
     types: {
       id_plani: 'int',
@@ -95,7 +108,7 @@ const TABLE_CONFIG = {
   // Transactional Data
   convocatoria: {
     unique_key: ['id_plani', 'id_agente'],
-    mandatory: ['id_plani', 'id_agente', 'id_turno', 'fecha_convocatoria'],
+    mandatory: ['id_plani', 'id_agente', 'id_turno'],
     allowed_values: {
       estado: ['vigente', 'historica', 'cancelada', 'cumplida', 'con_inasistencia']
     },
@@ -104,7 +117,6 @@ const TABLE_CONFIG = {
       id_plani: 'int',
       id_agente: 'int',
       id_turno: 'int',
-      fecha_convocatoria: 'date',
       estado: 'str',
       turno_cancelado: 'bool',  // NUEVO: marca turnos cancelados individualmente
       motivo_cambio: 'str'

@@ -275,21 +275,22 @@ function uploadDispositivos() {
         if (row[headers.indexOf('sync_status')] && row[headers.indexOf('sync_status')].toString().includes('✅')) continue; // Ya sync
 
         const record = {
-            id_dispositivo: row[0],
-            nombre: row[1],
-            capacidad_habitual: row[2] || 1,
-            activo: row[3] === '' ? true : row[3]
+            nombre_dispositivo: row[1],
+            piso_dispositivo: row[2] ? parseInt(row[2]) : null,
+            activo: row[3] === '' ? true : (row[3] === true || row[3] === 'TRUE' || row[3] === 1),
+            es_critico: row[4] === true || row[4] === 'TRUE' || row[4] === 1,
+            cupo_minimo: row[5] ? parseInt(row[5]) : 0,
+            cupo_optimo: row[6] ? parseInt(row[6]) : 0
         };
         
-        // Si no tiene ID, es insert nuevo (serial). Si tiene ID, deberíamos hacer update (pero helpers actuales son basicos)
-        // Por simplicidad para el usuario: "Carga Nuevos".
-        if (record.id_dispositivo) {
-             // Es update o insert manual de ID. 
-             // Omitimos update por ahora para no complicar helpers.
+        const id_existente = row[0];
+        
+        // Si tiene ID, significa que ya está en uso o es un update.
+        // Omitimos update por ahora (asignacion.gs se enfoca en inserts básicos),
+        // el update completo de Dispositivos está en Capacitaciones.gs.
+        if (id_existente) {
              continue; 
         }
-        
-        delete record.id_dispositivo; // Dejar que DB asigne
         
         const res = insertRow('dispositivos', record);
         if (res.success) {
@@ -403,15 +404,20 @@ function generarPlantillaDiseño() {
     const mes = filters.mes_activo;
     
     // 1. Obtener Dispositivos Activos
-    const dispositivos = fetchAllWithFilters('dispositivos', 'id_dispositivo, nombre_dispositivo', { activo: true });
+    const dispositivos = fetchAllWithFilters('dispositivos', 'id_dispositivo, nombre_dispositivo, piso_dispositivo', { activo: true });
     
     if (dispositivos.length === 0) {
       ui.alert('No hay dispositivos activos para generar la plantilla.');
       return;
     }
     
-    // Ordenar alfabéticamente
-    dispositivos.sort((a, b) => a.nombre_dispositivo.localeCompare(b.nombre_dispositivo));
+    // Ordenar: Piso ASC, luego Nombre ASC
+    dispositivos.sort((a, b) => {
+        const pisoA = a.piso_dispositivo || 999;
+        const pisoB = b.piso_dispositivo || 999;
+        if (pisoA !== pisoB) return pisoA - pisoB;
+        return a.nombre_dispositivo.localeCompare(b.nombre_dispositivo);
+    });
 
     const sheet = getOrCreateSheet_('DISEÑO_CALENDARIO');
     sheet.clear();
@@ -463,11 +469,31 @@ function generarPlantillaDiseño() {
     }
 
     // 3. Generar Headers
-    const headersIds = ['META_FECHA', 'META_TURNO_ID', 'META_TURNO_NOMBRE', 'META_CONVOCADOS', ...dispositivos.map(d => d.id_dispositivo)];
-    const headersNombres = ['Fecha (YYYY-MM-DD)', 'ID Turno', 'Nombre Turno', '👥 Convocados', ...dispositivos.map(d => d.nombre_dispositivo)];
+    const headersIds = ['META_FECHA', 'META_TURNO_ID', 'META_TURNO_NOMBRE', 'META_CONVOCADOS'];
+    const headersNombres = ['Fecha (YYYY-MM-DD)', 'ID Turno', 'Nombre Turno', '👥 Convocados'];
+    const headerColors = ["#E6E6E6", "#E6E6E6", "#E6E6E6", "#E6E6E6"];
+    
+    dispositivos.forEach(d => {
+        headersIds.push(d.id_dispositivo);
+        const nombre = d.nombre_dispositivo.length > 20 ? d.nombre_dispositivo.substring(0,20) + '…' : d.nombre_dispositivo;
+        headersNombres.push(nombre);
+        
+        let color = "#ffffff";
+        switch (d.piso_dispositivo) {
+            case 1: color = "#fff2cc"; break; // Amarillo
+            case 2: color = "#ea9999"; break; // Rojo
+            case 3: color = "#a4c2f4"; break; // Azul
+            case 4: color = "#b6d7a8"; break; // Verde
+            default: color = "#eeeeee";
+        }
+        headerColors.push(color);
+    });
     
     sheet.getRange(1, 1, 1, headersIds.length).setValues([headersIds]).setFontColor('#CCCCCC'); 
-    sheet.getRange(2, 1, 1, headersNombres.length).setValues([headersNombres]).setFontWeight('bold').setBackground('#E6E6E6');
+    
+    const headerRange = sheet.getRange(2, 1, 1, headersNombres.length);
+    headerRange.setValues([headersNombres]).setFontWeight('bold');
+    headerRange.setBackgrounds([headerColors]);
     sheet.setFrozenRows(2);
     sheet.setFrozenColumns(4); 
     sheet.hideRows(1); 
@@ -786,4 +812,189 @@ function formatDate_(dateValue) {
         return Utilities.formatDate(dateValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     }
     return String(dateValue).split('T')[0];
+}
+
+// ============================================================================
+// ASIGNACIÓN DIARIA (Pestaña Operativa)
+// ============================================================================
+
+function generarPlantillaAsignacionDiaria() {
+    const ui = SpreadsheetApp.getUi();
+    const filters = getActiveFilters();
+    
+    try {
+        const anio = filters.año_activo;
+        const mes = filters.mes_activo;
+        const fechaInicioStr = anio + '-' + String(mes).padStart(2, '0') + '-01';
+        const ultimoDia = new Date(anio, mes, 0).getDate();
+        const fechaFinStr = anio + '-' + String(mes).padStart(2, '0') + '-' + ultimoDia;
+        
+        // 1. Obtener Datos
+        const calendario = fetchAllWithFilters('calendario_dispositivos', 'fecha, id_turno, id_dispositivo, cupo_objetivo', {
+            fecha: { operator: 'gte', value: fechaInicioStr }
+        }).filter(c => c.fecha <= fechaFinStr);
+        
+        if (calendario.length === 0) {
+            ui.alert(`No hay dispositivos planificados cargados para ${mes}/${anio}.`);
+            return;
+        }
+        
+        const turnos = fetchAllWithFilters('turnos', 'id_turno, tipo_turno');
+        const mapTurnos = new Map(turnos.map(t => [t.id_turno, t.tipo_turno]));
+        
+        // ¡Importante solicitar piso_dispositivo para colorear!
+        const dispositivos = fetchAllWithFilters('dispositivos', 'id_dispositivo, nombre_dispositivo, piso_dispositivo');
+        const mapDisp = new Map(dispositivos.map(d => [d.id_dispositivo, d]));
+        
+        // Ordenar calendario por Fecha, Turno, Dispositivo Decimal/Alfabético
+        calendario.sort((a,b) => {
+            if (a.fecha !== b.fecha) return a.fecha.localeCompare(b.fecha);
+            if (a.id_turno !== b.id_turno) return a.id_turno - b.id_turno;
+            
+            // Ordenar por Piso, luego alfabético
+            const dispA = mapDisp.get(a.id_dispositivo);
+            const dispB = mapDisp.get(b.id_dispositivo);
+            const pisoA = dispA ? (dispA.piso_dispositivo || 999) : 999;
+            const pisoB = dispB ? (dispB.piso_dispositivo || 999) : 999;
+            
+            if (pisoA !== pisoB) return pisoA - pisoB;
+            const nomA = dispA ? dispA.nombre_dispositivo : '';
+            const nomB = dispB ? dispB.nombre_dispositivo : '';
+            return nomA.localeCompare(nomB);
+        });
+        
+        const sheet = getOrCreateSheet_('ASIGNACION_DIARIA');
+        // Limpiamos SOLO las columnas de la A a la I (las primeras 9) para no borrar tus notas manuales
+        sheet.getRange("A:I").clear();
+        sheet.getRange("A:I").clearDataValidations();
+        
+        const headers = ['Fecha', 'Tipo de Turno', 'Dispositivo', 'Cantidad de Residentes', 'Residente 1', 'Residente 2', 'Residente 3', 'Residente 4', 'Residente 5'];
+        
+        const rows = calendario.map(c => [
+            c.fecha,
+            mapTurnos.get(c.id_turno) || c.id_turno,
+            mapDisp.get(c.id_dispositivo) ? mapDisp.get(c.id_dispositivo).nombre_dispositivo : c.id_dispositivo,
+            c.cupo_objetivo,
+            '', '', '', '', ''
+        ]);
+        
+        // Formato Cabecera
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#E6E6E6');
+        
+        // Rellenar Datos
+        sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+        
+        // Pintar columna de Dispositivos (Columna C es index 3)
+        const coloresPiso = rows.map((row, index) => {
+            const dispName = row[2];
+            // Buscar que dispositivo matchea este nombre
+            const dispObj = dispositivos.find(d => d.nombre_dispositivo === dispName);
+            if (!dispObj) return ['#ffffff'];
+            
+            switch (dispObj.piso_dispositivo) {
+                case 1: return ["#fff2cc"]; // Amarillo
+                case 2: return ["#ea9999"]; // Rojo
+                case 3: return ["#a4c2f4"]; // Azul
+                case 4: return ["#b6d7a8"]; // Verde
+                default: return ["#ffffff"];
+            }
+        });
+        sheet.getRange(2, 3, rows.length, 1).setBackgrounds(coloresPiso).setFontWeight('bold');
+        
+        // Regla de validación (Dropdowns) para residentes (Solo activos de la cohorte actual)
+        const residentesRaw = fetchAllWithFilters('datos_personales', 'nombre, apellido, cohorte', { activo: true });
+        const residentesDelAnio = residentesRaw.filter(r => r.cohorte == anio);
+        
+        // Formatear APELLIDO, Nombre EXACTO como viene de la base de datos (vital para el formato condicional)
+        const residentesLista = residentesDelAnio.map(r => {
+             return r.apellido + ', ' + r.nombre;
+        }).sort();
+        
+        const validationRule = SpreadsheetApp.newDataValidation()
+            .requireValueInList(residentesLista, true)
+            .setAllowInvalid(true)
+            .build();
+            
+        // Aplicar validación a las 5 columnas de residentes (E a I, es decir: 5 a 9)
+        const rangeResidentes = sheet.getRange(2, 5, rows.length, 5);
+        rangeResidentes.setDataValidation(validationRule); // Sin fondo quemado para permitir formato condicional
+        
+        // Reglas de Formato Condicional usando la hoja HISTORIAL_CAPACITACION
+        // ROJO: El residente NO tiene ninguna capacitación en este dispositivo (COUNTIFS == 0)
+        // OJO: E2 es la celda inicial relativa. Al no tener $, se moverá hacia F, G, etc. $C2 asegura que siempre mire el dispositivo en la columna C.
+        const ruleRed = SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=AND(E2<>"", COUNTIFS(INDIRECT("HISTORIAL_CAPACITACION!$C:$C"), E2, INDIRECT("HISTORIAL_CAPACITACION!$B:$B"), $C2)=0)`)
+            .setBackground('#f4c7c3') // Rojo suavizado
+            .setRanges([rangeResidentes])
+            .build();
+            
+        // AMARILLO: El residente tiene capacitación en este dispositivo, pero figura como "No" asistió
+        const ruleYellow = SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=AND(E2<>"", COUNTIFS(INDIRECT("HISTORIAL_CAPACITACION!$C:$C"), E2, INDIRECT("HISTORIAL_CAPACITACION!$B:$B"), $C2, INDIRECT("HISTORIAL_CAPACITACION!$D:$D"), "No")>0)`)
+            .setBackground('#fce8b2') // Amarillo suavizado
+            .setRanges([rangeResidentes])
+            .build();
+            
+        // VERDE: El residente está agendado (Sí o Pendiente) y su fecha de capa es <= a la apertura
+        const ruleGreen = SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=AND(E2<>"", COUNTIFS(INDIRECT("HISTORIAL_CAPACITACION!$C:$C"), E2, INDIRECT("HISTORIAL_CAPACITACION!$B:$B"), $C2, INDIRECT("HISTORIAL_CAPACITACION!$A:$A"), "<="&$A2, INDIRECT("HISTORIAL_CAPACITACION!$D:$D"), "<>No")>0)`)
+            .setBackground('#b7e1cd') // Verde suavizado
+            .setRanges([rangeResidentes])
+            .build();
+            
+        // Aplicamos en orden (Verde, Amarillo, Rojo)
+        sheet.setConditionalFormatRules([ruleGreen, ruleYellow, ruleRed]);
+        
+        // Estilos finales
+        sheet.getRange(2, 1, rows.length, 1).setHorizontalAlignment('center'); // Fecha
+        sheet.getRange(2, 4, rows.length, 1).setHorizontalAlignment('center'); // Cantidad
+
+        sheet.autoResizeColumns(1, headers.length);
+        sheet.setFrozenRows(1);
+        
+        ui.alert(`✅ Plantilla de Asignación generada.\nFilas: ${rows.length}\nPisos coloreados y Dropdowns de Nombres creados.`);
+
+    } catch (e) {
+        ui.alert('❌ Error: ' + e.message);
+    }
+}
+
+// ============================================================================
+// HISTORIAL DE CAPACITACIONES (VISTA PLANA)
+// ============================================================================
+
+function downloadHistorialCapacitaciones() {
+    const ui = SpreadsheetApp.getUi();
+    
+    try {
+        const datos = fetchAllWithFilters('vista_historial_capacitaciones', '*');
+        
+        if (datos.length === 0) {
+            ui.alert('ℹ️ El historial de capacitaciones está vacío.');
+            return;
+        }
+        
+        const sheet = getOrCreateSheet_('HISTORIAL_CAPACITACION');
+        sheet.clear();
+        
+        const headers = ['Fecha Capacitación', 'Dispositivo Capacitado', 'Residente Capacitado', 'Asistió'];
+        
+        const rows = datos.map(r => [
+            r.fecha_capacitacion,
+            r.dispositivo_capacitado,
+            r.residente_capacitado,
+            r.estado_asistencia
+        ]);
+        
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#E1BEE7');
+        sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+        
+        sheet.autoResizeColumns(1, headers.length);
+        sheet.setFrozenRows(1);
+        
+        ui.alert(`✅ Historial (Convocatorias + Asistencias) descargado con éxito.\nTotal de registros: ${rows.length}`);
+
+    } catch(e) {
+        ui.alert('❌ Error al descargar historial: ' + e.message);
+    }
 }
