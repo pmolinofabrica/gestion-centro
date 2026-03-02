@@ -34,13 +34,25 @@ def fetch_data(mes_objetivo="03-2026", anio_cohorte=2026):
     residentes = res_residentes.data
     print(f"✅ Residentes activos cargados: {len(residentes)}")
     
-    # 2. Traer Dispositivos Operativos (incluyendo cupos)
+    # 2. Traer Dispositivos Operativos (incluyendo cupos variables)
     res_dispo = supabase.table("dispositivos").select("id_dispositivo, nombre_dispositivo, cupo_optimo").eq("activo", True).execute()
     dispositivos = res_dispo.data
     # Creamos lookup tables para agilizar el cruce ID <-> Data
     dispo_data = {d["id_dispositivo"]: {"nombre": d["nombre_dispositivo"], "cupo": d.get("cupo_optimo", 1) or 1} for d in dispositivos}
     print(f"✅ Dispositivos operativos cargados: {len(dispositivos)}")
-    
+
+    # NUEVO: Traer excepciones de cupos por dia (calendario_dispositivos)
+    res_calendario = supabase.table("calendario_dispositivos").select("id_dispositivo, fecha, cupo_habilitado").execute()
+    cupos_por_fecha = {}
+    for row in res_calendario.data:
+        ft = row["fecha"]
+        did = row["id_dispositivo"]
+        cupo_val = row["cupo_habilitado"]
+        if ft not in cupos_por_fecha:
+            cupos_por_fecha[ft] = {}
+        cupos_por_fecha[ft][did] = cupo_val
+    print(f"✅ Cupos dinámicos por fecha cargados: {len(res_calendario.data)}")
+
     # 3. Traer Matriz de Capacitaciones Aprobadas (Completa vía Relaciones)
     print("⏳ Procesando Matriz temporal jerárquica de Capacitaciones -> Dispositivos ...")
     
@@ -148,7 +160,7 @@ def fetch_data(mes_objetivo="03-2026", anio_cohorte=2026):
         
     print(f"✅ Convocatorias del mes procesadas (Lectura DAMA): {len(res_convos.data)} turnos en total.")
 
-    return residentes, dispo_data, caps_por_agente, convocatorias_por_dia
+    return residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha
 
 
 if __name__ == "__main__":
@@ -159,8 +171,14 @@ import random
 # ALGORITMO CORE: ASIGNACIÓN AUTOMÁTICA
 # ==============================================================================
 
-def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_objetivo, dias_del_mes):
+def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_objetivo, dias_del_mes, cupos_por_fecha):
     print("\n--- INICIANDO MOTOR DE ASIGNACIONES (PRODUCCIÓN) ---")
+
+    # Helper auxiliar para obtener el cupo real de un dispositivo en un día
+    def get_cupo(dispo_id, fecha_str):
+        if fecha_str in cupos_por_fecha and dispo_id in cupos_por_fecha[fecha_str]:
+            return cupos_por_fecha[fecha_str][dispo_id]
+        return dispo_data[dispo_id]["cupo"]
     
     # 2. Setup del Tracking Historico y Resultados
     historial_rotacion = {r["id_agente"]: {d: 0 for d in dispo_data.keys()} for r in residentes}
@@ -199,14 +217,15 @@ def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocato
         
         # Primero aseguramos al menos 1 plaza para cada dispositivo donde haya alguien capacitado
         for did in dispositivos_viables:
-            if plazas_a_repartir > 0 and demandas_del_dia[did] < dispo_data[did]["cupo"]:
+            cupo_real = get_cupo(did, fecha_asignacion)
+            if plazas_a_repartir > 0 and demandas_del_dia[did] < cupo_real:
                 demandas_del_dia[did] = 1
                 plazas_a_repartir -= 1
                 
         # Luego repartimos el excedente de personal hasta alcanzar el cupo optimo de todos los abiertos
         for did in dispositivos_viables:
-            cupo_optimo = dispo_data[did]["cupo"]
-            while plazas_a_repartir > 0 and demandas_del_dia[did] < cupo_optimo:
+            cupo_real = get_cupo(did, fecha_asignacion)
+            while plazas_a_repartir > 0 and demandas_del_dia[did] < cupo_real:
                 demandas_del_dia[did] += 1
                 plazas_a_repartir -= 1
                 
@@ -297,7 +316,7 @@ if __name__ == "__main__":
 
     mes_target = "03-2026"
     
-    residentes, dispo_data, caps_por_agente, convocatorias_por_dia = fetch_data(mes_objetivo=mes_target, anio_cohorte=2026)
+    residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha = fetch_data(mes_objetivo=mes_target, anio_cohorte=2026)
     
     # Derivación dinámica DAMA de los días a procesar (Lo que haya bajado de Google Sheets)
     test_days = sorted(list(convocatorias_por_dia.keys()))
@@ -313,7 +332,7 @@ if __name__ == "__main__":
     print(f"\n✅ Días a procesar evaluados y filtrados: {test_days}")
     
     resultados, m_huecos, m_libres = execute_assignment_engine(
-        residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_target, test_days
+        residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_target, test_days, cupos_por_fecha
     )
     print("\n=== METRICAS DE ASIGNACIÓN ===\n")
     for d in test_days:

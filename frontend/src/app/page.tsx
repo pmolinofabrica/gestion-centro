@@ -124,6 +124,8 @@ export default function AsignacionesApp() {
   };
 
   // Funciones de Undo / Revertir local (con persistencia localStorage)
+  // Deshacer: restaura snapshot(s) usando PK real (id_agente + fecha_asignacion)
+  // Soporta entrada simple { snapshot } o compuesta { snapshots: [...] } para acciones como Swap
   const handleUndoLastAction = async () => {
     if (undoStack.length === 0) return;
 
@@ -131,38 +133,41 @@ export default function AsignacionesApp() {
     const lastAction = undoStack[undoStack.length - 1];
 
     try {
-      let error: any = null;
+      // Normalizar: puede ser un solo snapshot o un array (ej: swap de 2 residentes)
+      const snaps: any[] = lastAction.snapshots
+        ? lastAction.snapshots
+        : lastAction.snapshot
+          ? [lastAction.snapshot]
+          : [];
 
-      if (lastAction.id_asignacion) {
-        // Ruta A: Undo por id_asignacion (AssignVacant)
-        const res = await supabase.from('menu')
-          .update({
-            id_dispositivo: Number(lastAction.old_id_dispositivo),
-            id_agente: lastAction.old_id_agente
-          })
-          .eq('fecha_asignacion', lastAction.fecha_asignacion)
-          .eq('id_asignacion', lastAction.id_asignacion);
-        error = res.error;
-      } else {
-        // Ruta B: Undo por filtros directos (Remove, Swap, Quitar-inline)
-        const res = await supabase.from('menu')
-          .update({
-            id_dispositivo: Number(lastAction.old_id_dispositivo),
-            id_agente: lastAction.old_id_agente
-          })
-          .eq('id_agente', lastAction.old_id_agente)
-          .eq('fecha_asignacion', lastAction.fecha_asignacion);
-        error = res.error;
+      if (snaps.length === 0) {
+        alert('No hay snapshot válido para deshacer.');
+        setIsLoading(false);
+        return;
       }
 
-      if (error) {
-        alert("Error restaurando la acción: " + error.message);
+      // Revertir cada snapshot en paralelo
+      const results = await Promise.all(
+        snaps.map(snap =>
+          supabase.from('menu')
+            .update({
+              id_dispositivo: snap.id_dispositivo,
+              estado_ejecucion: snap.estado_ejecucion,
+            })
+            .eq('id_agente', snap.id_agente)
+            .eq('fecha_asignacion', snap.fecha_asignacion)
+        )
+      );
+
+      const anyError = results.find(r => r.error);
+      if (anyError?.error) {
+        alert('Error al deshacer: ' + anyError.error.message);
       } else {
         popUndo();
         window.location.reload();
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      alert('Excepción al deshacer: ' + e.message);
     }
     setIsLoading(false);
   };  // Real DB Fetching logic
@@ -300,10 +305,13 @@ export default function AsignacionesApp() {
               const [y, m, d] = dateParts;
               const uiDate = `${d}/${m}`;
 
-              // Todos ingresan al conteo base de 'convocados' el dia de la fecha
-              convocadosCount[uiDate] = (convocadosCount[uiDate] || 0) + 1;
+              // DEDUPLICAR: un agente puede tener múltiples filas por bugs previos.
+              // Solo lo contamos UNA vez por fecha.
               if (!convocadosList[uiDate]) convocadosList[uiDate] = [];
-              convocadosList[uiDate].push(a.id_agente);
+              if (!convocadosList[uiDate].includes(a.id_agente)) {
+                convocadosList[uiDate].push(a.id_agente);
+                convocadosCount[uiDate] = (convocadosCount[uiDate] || 0) + 1;
+              }
 
               if (a.id_dispositivo && a.id_dispositivo !== 999) {
                 const dId = String(a.id_dispositivo);
@@ -512,6 +520,7 @@ export default function AsignacionesApp() {
 
   // Mutación: Cambiar a un residente por otro en la BBDD
   const handleSwapResident = async (newResId: number) => {
+    if (isLoading) return;
     if (!selectedResident) return;
 
     // 1. Buscar IDs numéricos
@@ -531,42 +540,69 @@ export default function AsignacionesApp() {
       try {
         setIsLoading(true);
 
-        // FIX UNDO: Buscar el id_asignacion (PK) ANTES del swap.
-        // Después del swap, la fila tendrá el nuevo id_agente y el filtro
-        // .eq('id_agente', old_id_agente) no matcheará nada. Al guardar
-        // el id_asignacion usamos "Ruta A" en el undo que filtra por PK.
-        const { data: existingRow } = await supabase
+        // Paso 1: Snapshot DEL ORIGINAL para Undo compuesto
+        const { data: snapOriginal, error: e1 } = await supabase
           .from('menu')
-          .select('id_asignacion')
+          .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion, id_convocatoria, orden')
           .eq('id_agente', oldRes.id_agente)
           .eq('id_dispositivo', Number(disp.id))
           .eq('fecha_asignacion', fechaDB)
           .maybeSingle();
 
-        pushUndo({
-          fecha_asignacion: fechaDB,
-          id_asignacion: existingRow?.id_asignacion,  // Ruta A: undo por PK ✅
-          old_id_agente: oldRes.id_agente,             // valor restaurado en el undo
-          old_id_dispositivo: Number(disp.id),
-          action_type: 'swap'
-        });
+        if (e1) { alert("Error Paso 1: " + e1.message); setIsLoading(false); return; }
+        if (!snapOriginal) { alert(`Paso 1: No hay fila para agente=${oldRes.id_agente} disp=${disp.id} fecha=${fechaDB}`); setIsLoading(false); return; }
 
-        const { error } = await supabase
+        // Paso 2: Mover original a vacantes (id_dispositivo = 999)
+        const { error: e2 } = await supabase
           .from('menu')
-          .update({ id_agente: newRes.id_agente })
+          .update({ id_dispositivo: 999, estado_ejecucion: 'planificado' })
           .eq('id_agente', oldRes.id_agente)
-          .eq('id_dispositivo', Number(disp.id))
           .eq('fecha_asignacion', fechaDB);
 
-        if (!error) {
-          setSelectedResident(null);
-          window.location.reload();
+        if (e2) { alert("Error Paso 2: " + e2.message); setIsLoading(false); return; }
+
+        // Paso 3: Buscar snapshot DEL NUEVO (para Undo compuesto) y actualizar su dispositivo
+        const { data: filaNew, error: e3 } = await supabase
+          .from('menu')
+          .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion')
+          .eq('id_agente', newRes.id_agente)
+          .eq('fecha_asignacion', fechaDB)
+          .maybeSingle();
+
+        if (e3) { alert("Error Paso 3: " + e3.message); setIsLoading(false); return; }
+
+        if (filaNew) {
+          // Paso 4a: El nuevo ya tiene fila (estaba vacante) → actualizar a este dispositivo
+          const { error: e4 } = await supabase
+            .from('menu')
+            .update({ id_dispositivo: Number(disp.id), estado_ejecucion: 'planificado' })
+            .eq('id_agente', newRes.id_agente)
+            .eq('fecha_asignacion', fechaDB);
+
+          if (e4) { alert("Error Paso 4a: " + e4.message); setIsLoading(false); return; }
+
+          // Guardar undo compuesto: revertir AMBOS residentes en una sola pulsación de Deshacer
+          pushUndo({ snapshots: [snapOriginal, filaNew] });
         } else {
-          alert("Error Supabase: " + error.message);
-          setIsLoading(false);
+          // Paso 4b: El nuevo no tiene fila (en descanso) → insertar nueva con id_convocatoria del original
+          const { error: e4 } = await supabase.from('menu').insert([{
+            id_agente: newRes.id_agente,
+            id_dispositivo: Number(disp.id),
+            fecha_asignacion: fechaDB,
+            estado_ejecucion: 'planificado',
+            id_convocatoria: snapOriginal.id_convocatoria ?? 0
+          }]);
+
+          if (e4) { alert("Error Paso 4b: " + e4.message); setIsLoading(false); return; }
+
+          // Solo guardamos snapshot del original (el nuevo no existía, no se puede revertir)
+          pushUndo({ snapshot: snapOriginal });
         }
+
+        setSelectedResident(null);
+        window.location.reload();
       } catch (e: any) {
-        alert("Excepción: " + e.message);
+        alert("Excepción en intercambio: " + e.message);
         setIsLoading(false);
       }
     } else {
@@ -576,6 +612,7 @@ export default function AsignacionesApp() {
 
   // Mutación: Enviar residente a "Sin Asignar" (Vacantes)
   const handleRemoveResident = async () => {
+    if (isLoading) return;
     if (!selectedResident) return;
 
     try {
@@ -595,14 +632,15 @@ export default function AsignacionesApp() {
         alert("Error de DB al quitar la asignación: " + error.message);
         setIsLoading(false);
       } else {
-        // Find existing device to push to UndoStack
         const deviceOfRes = dbDevices.find(d => d.name === selectedResident.device);
         if (deviceOfRes) {
           pushUndo({
-            fecha_asignacion: fechaDB,
-            old_id_agente: selectedResident.id,
-            old_id_dispositivo: deviceOfRes.id,
-            action_type: 'remove'
+            snapshot: {
+              id_agente: selectedResident.id,
+              fecha_asignacion: fechaDB,
+              id_dispositivo: Number(deviceOfRes.id),
+              estado_ejecucion: 'planificado' // valor previo asumido
+            }
           });
         }
 
@@ -617,6 +655,7 @@ export default function AsignacionesApp() {
 
   // Mutación: Invocar IA de Supabase remotamente
   const handleRunAI = async () => {
+    if (isLoading) return;
     try {
       if (!confirm("¿Ejecutar Inteligencia Artificial? Esto re-calculará las asignaciones desde hoy hacia el final del mes, respetando tus parámetros.")) return;
 
@@ -642,6 +681,7 @@ export default function AsignacionesApp() {
 
   // Mutación: Asignar a un residente Vacante a un Dispositivo en la UI
   const handleAssignVacant = async (deviceId: string) => {
+    if (isLoading) return;
     if (!selectedVacant) return;
 
     try {
@@ -671,24 +711,19 @@ export default function AsignacionesApp() {
       }
 
       const { data: existingMenu } = await supabase.from('menu')
-        .select('id_asignacion')
+        .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion')
         .eq('id_agente', selectedVacant.id)
         .eq('fecha_asignacion', fechaDB)
         .maybeSingle();
 
       if (existingMenu) {
-        pushUndo({
-          fecha_asignacion: fechaDB,
-          id_asignacion: existingMenu.id_asignacion,
-          old_id_agente: selectedVacant.id,
-          old_id_dispositivo: 999,
-          action_type: 'assign_vacant'
-        });
+        pushUndo({ snapshot: existingMenu });
 
         // Update
         await supabase.from('menu')
           .update({ id_dispositivo: parseInt(deviceId), estado_ejecucion: 'planificado' })
-          .eq('id_asignacion', existingMenu.id_asignacion);
+          .eq('id_agente', selectedVacant.id)
+          .eq('fecha_asignacion', fechaDB);
       } else {
         // Fallback Insert
         await supabase.from('menu').insert([{
@@ -706,6 +741,39 @@ export default function AsignacionesApp() {
       alert("Excepción al asignar vacante: " + e.message);
       setIsLoading(false);
     }
+  };
+
+  // Mutación: Guardar la matriz de dispositivos
+  const handleSaveMatrixDevices = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    try {
+      const payload: any[] = [];
+      const yyyy = selectedMonth.split(" ")[1] || "2026";
+
+      Object.entries(calendarDb).forEach(([strDate, deviceMap]) => {
+        const [d, mStr] = strDate.split("/");
+        const fechaDB = `${yyyy}-${mStr}-${d}`;
+        Object.entries(deviceMap).forEach(([devId, cupo]) => {
+          payload.push({
+            id_dispositivo: Number(devId),
+            fecha: fechaDB,
+            cupo_habilitado: cupo
+          });
+        });
+      });
+
+      if (payload.length > 0) {
+        const { error } = await supabase.from('calendario_dispositivos').upsert(payload, { onConflict: 'id_dispositivo, fecha' });
+        if (error) throw error;
+        alert("Matriz de Dispositivos guardada con éxito.");
+      } else {
+        alert("No hay datos para guardar.");
+      }
+    } catch (e: any) {
+      alert("Error al guardar la Matriz de Dispositivos: " + e.message);
+    }
+    setIsLoading(false);
   };
 
   // Render Componente Sidebar (Vacantes)
@@ -773,7 +841,7 @@ export default function AsignacionesApp() {
 
                       return (
                         <button
-                          key={vid}
+                          key={`${date}-${vid}`}
                           onClick={() => { setSelectedVacant({ id: res.id, name: res.name, date }); setSelectedDevice(null); setSelectedResident(null); }}
                           className={`w-full text-left p-3 rounded-xl border transition-all shadow-sm ${selectedVacant?.id === res.id && selectedVacant?.date === date ? 'border-indigo-500 ring-2 ring-indigo-200 bg-indigo-50/80 scale-[1.02]' : 'border-slate-200 bg-white hover:border-indigo-400 hover:shadow-md'}`}
                         >
@@ -1472,6 +1540,135 @@ export default function AsignacionesApp() {
 
                         const convocadosHoy = selectedDateFilter ? new Set(convocadosDb[selectedDateFilter] || []) : null;
 
+                        if (selectedDateFilter) {
+                          const tier1: any[] = []; // Convocado y Capacitado
+                          const tier2: any[] = []; // Convocado y NO Capacitado
+                          const tier3: any[] = []; // Descanso y Capacitado
+                          const tier4: any[] = []; // Descanso y NO Capacitado
+                          const tierInasistencias: any[] = []; // Inasistencias 
+
+                          // Find occupancies for locks
+                          const occupancies: Record<number, string> = {};
+                          Object.values(assignmentsDb[selectedDateFilter] || {}).forEach((arr, idx, array) => {
+                            const devNameKeys = Object.keys(assignmentsDb[selectedDateFilter] || {});
+                            const devIdStr = devNameKeys[idx];
+                            const devObj = dbDevices.find(d => d.id === devIdStr);
+                            arr.forEach((r: any) => occupancies[r.id] = devObj ? devObj.name : 'Otro');
+                          });
+
+                          const isAbsent = (name: string) => absentResidents.includes(name);
+
+                          allResidentsDb.forEach((res) => {
+                            const isConvocado = convocadosHoy ? convocadosHoy.has(res.id) : false;
+                            const isCapacitado = (() => {
+                              const cDate = res.caps[selectedDevice.id];
+                              if (!cDate || !formattedSelectedDate) return false;
+                              return cDate <= formattedSelectedDate;
+                            })();
+                            const currentLocation = occupancies[res.id];
+
+                            const alt = {
+                              name: res.name,
+                              isBusy: !!currentLocation,
+                              reason: isConvocado ? (currentLocation ? `Ocupado en: ${currentLocation}` : "Libre hoy") : "Descanso"
+                            };
+
+                            if (isAbsent(res.name)) {
+                              tierInasistencias.push({ ...alt, type: "Inasistencia" });
+                            } else if (isCapacitado && isConvocado) tier1.push(alt);
+                            else if (!isCapacitado && isConvocado) tier2.push(alt);
+                            else if (isCapacitado && !isConvocado) tier3.push(alt);
+                            else tier4.push(alt);
+                          });
+
+                          return (
+                            <div className="space-y-4">
+                              {/* TIER 1 */}
+                              {tier1.length > 0 && <div className="mb-4">
+                                <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider mb-2 flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Convocado y Capacitado ({tier1.length})
+                                </span>
+                                <div className="space-y-2">
+                                  {tier1.map((alt, i) => (
+                                    <div key={i} className={`w-full text-left p-3 rounded-lg border-2 flex justify-between items-center group
+                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-75' : 'border-emerald-200 bg-emerald-50'}`}>
+                                      <div>
+                                        <div className={`font-bold text-sm ${alt.isBusy ? 'text-slate-600' : 'text-emerald-900'}`}>{alt.name}</div>
+                                        <div className={`text-[10px] font-medium mt-0.5 ${alt.isBusy ? 'text-rose-500' : 'text-emerald-700'}`}>{alt.reason}</div>
+                                      </div>
+                                      {alt.isBusy && <span className="text-xs bg-rose-100 text-rose-700 p-1 px-2 rounded-md border border-rose-200 shadow-sm">Bloqueado 🔒</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>}
+
+                              {/* TIER 2 */}
+                              {tier2.length > 0 && <div className="mb-4">
+                                <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                                  <AlertCircle className="w-3 h-3" /> Convocado No Capacitado ({tier2.length})
+                                </span>
+                                <div className="space-y-1.5 opacity-90">
+                                  {tier2.map((alt, i) => (
+                                    <div key={i} className={`w-full text-left p-2.5 rounded-md border flex justify-between items-center group
+                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-70' : 'border-amber-200 bg-amber-50'}`}>
+                                      <div>
+                                        <div className={`font-semibold text-xs ${alt.isBusy ? 'text-slate-500' : 'text-amber-900'}`}>{alt.name}</div>
+                                        <div className={`text-[9px] leading-tight mt-0.5 ${alt.isBusy ? 'text-rose-400 font-bold' : 'text-amber-700'}`}>{alt.reason}</div>
+                                      </div>
+                                      {alt.isBusy && <span className="text-[10px] bg-rose-50 text-rose-600 p-0.5 px-1.5 rounded border border-rose-100">🔒</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>}
+
+                              {/* TIER 3 */}
+                              {tier3.length > 0 && <div className="mb-4">
+                                <span className="text-[9px] font-bold text-rose-500 uppercase tracking-wider mb-1 block">
+                                  Descanso y Capacitado ({tier3.length})
+                                </span>
+                                <div className="space-y-1 opacity-75">
+                                  {tier3.map((alt, i) => (
+                                    <div key={i} className="w-full text-left p-2 rounded border border-rose-200 bg-white flex justify-between items-center">
+                                      <div>
+                                        <div className="font-medium text-[11px] text-rose-800">{alt.name} <span className="text-[9px] text-rose-500 ml-1">({alt.reason})</span></div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>}
+
+                              {/* TIER 4 */}
+                              {tier4.length > 0 && <div className="mb-2">
+                                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider mb-1 block">
+                                  Descanso No Capacitado ({tier4.length})
+                                </span>
+                                <div className="space-y-1 opacity-50">
+                                  {tier4.map((alt, i) => (
+                                    <div key={i} className="w-full text-left p-1.5 rounded border border-slate-200 bg-white flex justify-between items-center">
+                                      <div className="font-medium text-[10px] text-slate-600">{alt.name}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>}
+
+                              {/* INASISTENCIAS */}
+                              {tierInasistencias.length > 0 && <div className="mb-2">
+                                <span className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1 block bg-rose-100 p-1 rounded">
+                                  🚫 Inasistencias ({tierInasistencias.length})
+                                </span>
+                                <div className="space-y-1">
+                                  {tierInasistencias.map((alt, i) => (
+                                    <div key={i} className="w-full text-left p-1.5 rounded border border-rose-300 bg-rose-50 flex justify-between items-center">
+                                      <div className="font-medium text-[10px] text-rose-900 strike-through line-through opacity-80">{alt.name}</div>
+                                      <span className="text-[10px] bg-rose-200 text-rose-800 p-0.5 px-1.5 rounded border border-rose-300 shadow">🔒</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>}
+                            </div>
+                          );
+                        }
+
                         // Clonamos y ordenamos el padrón
                         const sortedResidents = [...allResidentsDb].sort((a, b) => {
                           // Extract capabilities based on date
@@ -1755,10 +1952,12 @@ export default function AsignacionesApp() {
                                       } else {
                                         // UndoStack: registrar la acción para poder deshacerla
                                         pushUndo({
-                                          fecha_asignacion: fechaDB,
-                                          old_id_agente: res.id,
-                                          old_id_dispositivo: device.id,
-                                          action_type: 'quitar_inline'
+                                          snapshot: {
+                                            id_agente: res.id,
+                                            fecha_asignacion: fechaDB,
+                                            id_dispositivo: Number(device.id),
+                                            estado_ejecucion: 'planificado'
+                                          }
                                         });
                                         window.location.reload();
                                       }
@@ -1799,11 +1998,22 @@ export default function AsignacionesApp() {
           <main className="flex-1 overflow-auto p-6 bg-slate-100 absolute inset-0">
             <div className="max-w-7xl mx-auto pb-20">
               <div className="mb-6 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                <h2 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
-                  <Settings className="w-8 h-8 text-indigo-600" />
-                  Matriz de Dispositivos (Mes)
-                </h2>
-                <p className="text-sm text-slate-500 mt-2 font-medium">Configura qué dispositivos abren y con cuántos residentes cada día del mes. El sistema alertará si hay desbalances respecto a los residentes convocados.</p>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h2 className="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-3">
+                      <Settings className="w-8 h-8 text-indigo-600" />
+                      Matriz de Dispositivos (Mes)
+                    </h2>
+                    <p className="text-sm text-slate-500 mt-2 font-medium">Configura qué dispositivos abren y con cuántos residentes cada día del mes. El sistema alertará si hay desbalances respecto a los residentes convocados.</p>
+                  </div>
+                  <button
+                    onClick={handleSaveMatrixDevices}
+                    disabled={isLoading}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white px-6 py-2.5 rounded-xl font-bold shadow-sm transition-all flex items-center gap-2 border-b-4 border-indigo-800 active:border-b-0 active:translate-y-1"
+                  >
+                    Guardar Cambios
+                  </button>
+                </div>
               </div>
 
               {/* Daily Status and Metrics (Top Row) */}
