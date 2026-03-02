@@ -18,12 +18,12 @@ def main():
     else:
         print("⚠️ Warning: .env file not found in parent directory")
     
-    # Get database credentials with fallbacks (from commented out .env lines)
-    db_host = os.getenv('SUPABASE_DB_HOST') or 'aws-1-sa-east-1.pooler.supabase.com'
-    db_port = os.getenv('SUPABASE_DB_PORT') or '6543'
-    db_name = os.getenv('SUPABASE_DB_NAME') or 'postgres'
-    db_user = os.getenv('SUPABASE_DB_USER') or 'postgres.zgzqeusbpobrwanvktyz'
-    db_password = os.getenv('SUPABASE_DB_PASSWORD') or 'UUPxZPQJFowuBymi'
+    # Get database credentials from environment variables
+    db_host = os.getenv('SUPABASE_DB_HOST')
+    db_port = os.getenv('SUPABASE_DB_PORT')
+    db_name = os.getenv('SUPABASE_DB_NAME')
+    db_user = os.getenv('SUPABASE_DB_USER')
+    db_password = os.getenv('SUPABASE_DB_PASSWORD')
     
     if not all([db_host, db_user, db_password]):
         print("❌ Error: Missing database credentials in .env")
