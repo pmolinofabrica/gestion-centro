@@ -88,3 +88,58 @@ scripts/python/motor_asignacion_apertura4.py
 
 # Streamlit prototype (internal)
 app_asignaciones/
+
+# Legacy SQLite-era code and architecture (superseded by Supabase)
+src/
+tests/
+python/
+
+# Old migration and maintenance scripts (one-time use, already executed)
+scripts/archive/
+scripts/migrations/
+scripts/maintenance/
+scripts/execute_migration.py
+
+# Internal Obsidian vault config
+knowledge_base/.obsidian/
+
+# Operational docs and personal notes (not for public repo)
+knowledge_base/AUDITORIA_PROCESSO_COMPLETO.md
+knowledge_base/matriz_rotacion*.md
+knowledge_base/plan_capacitaciones_*.md
+knowledge_base/INSTRUCCIONES_OBSIDIAN.md
+knowledge_base/Home.md
+knowledge_base/DAMA_Planificacion_vs_Ejecucion.md
+
+# SQL noise and one-off fixes (not reusable schema)
+sql/archive/
+sql/seeds/
+sql/queries/DEBUG_*.sql
+sql/COUNT_*.sql
+sql/CORREGIR_*.sql
+sql/EJECUTAR_*.sql
+sql/MODIFICAR_*.sql
+sql/VERIFICAR_*.sql
+sql/FASE*.sql
+sql/fix_duplicate_participants.sql
+sql/grants/09_disable_rls_for_gas.sql
+
+# Internal docs not meant for public
+docs/archive/
+docs/CONFIGURACION_VSCODE_PASO_A_PASO.md
+docs/ERRORES_MIGRACION_SUPABASE.md
+docs/technical/BUG_REPORT_*.md
+docs/technical/CHECKLIST_*.md
+docs/technical/FIX_*.md
+docs/technical/GUIA_DASHBOARD.md
+docs/technical/GUIA_SALDOS.md
+
+# GAS debug and diagnostic tools
+scripts/google_apps/Test.gs
+scripts/google_apps/debug_*.gs
+scripts/google_apps/check_connectivity.gs
+scripts/google_apps/cache_manager.gs
+scripts/google_apps/config_manager.gs
+scripts/google_apps/config_assignment.gs
+scripts/google_apps/dashboard.gs
+scripts/google_apps/fix_planificacion_grants.sql
