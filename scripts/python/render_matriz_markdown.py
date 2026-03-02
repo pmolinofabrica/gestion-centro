@@ -2,8 +2,9 @@ import json
 import requests
 from collections import defaultdict
 from datetime import datetime
+import os
 
-CONFIG_FILE = '/home/pablo/Documentos/gestion-centro/config/supabase.json'
+CONFIG_FILE = os.environ.get('SUPABASE_CONFIG_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'config', 'supabase.json'))
 
 def get_base():
     with open(CONFIG_FILE, 'r') as f: config = json.load(f)
@@ -126,13 +127,14 @@ def generar_matriz_markdown():
                 row.append(asignado)
         md_lines.append(f"| {' | '.join(row)} |")
 
-    with open('/home/pablo/.gemini/antigravity/brain/38d79bb8-3e11-4214-bba2-c22807cfb777/matriz_rotacion.md', 'w') as fh:
+    output_path = os.environ.get('OUTPUT_MD_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'matriz_rotacion.md'))
+    with open(output_path, 'w') as fh:
         fh.write("# Matriz de Asignaciones (Marzo 2026)\n\n")
         fh.write("> [!NOTE] \n> Una tabla de doble entrada (Dispositivos en Y, Días en X) es el mejor modelo mental posible porque te permite ver la carga horizontal de la rotación y los huecos en las cuadrículas. El número entre paréntesis es el *Puntaje del Motor* final.\n\n")
         fh.write("\n".join(md_lines))
         fh.write("\n\n### Diccionario de Estados\n- **🔒 (Cerrado)**: El dispositivo aún no había dictado su capacitación en esta fecha.\n- **—**: Ningún residente activo, matriculado y convocado ese día cumplía con los requisitos.\n")
         
-    print("Markdown generado con éxito en /home/pablo/.gemini/antigravity/brain/38d79bb8-3e11-4214-bba2-c22807cfb777/matriz_rotacion.md")
+    print(f"Markdown generado con éxito en {output_path}")
 
 if __name__ == '__main__':
     generar_matriz_markdown()

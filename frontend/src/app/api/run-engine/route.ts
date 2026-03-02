@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import util from 'util';
+import path from 'path';
 
 const execPromise = util.promisify(exec);
 
@@ -13,7 +14,9 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Falta startDate' }, { status: 400 });
         }
 
-        const scriptsPath = '/home/pablo/Documentos/gestion-centro/scripts/python';
+        // Se usa path.resolve para resolver relativo a process.cwd() (donde se ejecuta el servidor de Next.js)
+        // Generalmente process.cwd() en dev/prod es la carpeta "frontend".
+        const scriptsPath = process.env.PYTHON_SCRIPTS_PATH || path.resolve(process.cwd(), '../scripts/python');
 
         // 1. Ejecutar el Undo condicionado a la fecha
         const undoCmd = `python3 undo_menu_marzo.py ${startDate}`;

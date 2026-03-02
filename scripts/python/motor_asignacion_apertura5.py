@@ -3,7 +3,9 @@ import requests
 from collections import defaultdict
 from datetime import datetime
 
-CONFIG_FILE = '/home/pablo/Documentos/gestion-centro/config/supabase.json'
+import os
+
+CONFIG_FILE = os.environ.get('SUPABASE_CONFIG_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'config', 'supabase.json'))
 
 def get_base():
     with open(CONFIG_FILE, 'r') as f: config = json.load(f)
@@ -225,7 +227,8 @@ def generar_matriz_markdown():
                 else: row.append("<br>".join([f"{nombres.get(a, '?')} ({p})" for a, p in asignados]))
         md_lines.append(f"| {' | '.join(row)} |")
 
-    with open('/home/pablo/Documentos/gestion-centro/knowledge_base/matriz_rotacion_completa.md', 'w') as fh:
+    output_path = os.environ.get('OUTPUT_MD_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'knowledge_base', 'matriz_rotacion_completa.md'))
+    with open(output_path, 'w') as fh:
         fh.write("# Matriz de Asignaciones Refinada (Marzo 2026)\n\n")
         fh.write("Esta tabla refleja la asignación de los 24 o 26 residentes reales (excluyendo a los que están en modo Descanso).\n")
         fh.write("Se aplica el **Plan 2** de las nuevas capacitaciones de marzo (distribuidas entre el 10, 11 y 20).\n\n")
