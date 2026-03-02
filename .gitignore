@@ -90,7 +90,7 @@ scripts/python/motor_asignacion_apertura4.py
 app_asignaciones/
 
 # Legacy SQLite-era code and architecture (superseded by Supabase)
-src/
+/src/
 tests/
 python/
 

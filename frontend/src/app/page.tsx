@@ -530,11 +530,24 @@ export default function AsignacionesApp() {
 
       try {
         setIsLoading(true);
-        // UndoStack: guardamos el estado previo antes del swap
+
+        // FIX UNDO: Buscar el id_asignacion (PK) ANTES del swap.
+        // Después del swap, la fila tendrá el nuevo id_agente y el filtro
+        // .eq('id_agente', old_id_agente) no matcheará nada. Al guardar
+        // el id_asignacion usamos "Ruta A" en el undo que filtra por PK.
+        const { data: existingRow } = await supabase
+          .from('menu')
+          .select('id_asignacion')
+          .eq('id_agente', oldRes.id_agente)
+          .eq('id_dispositivo', Number(disp.id))
+          .eq('fecha_asignacion', fechaDB)
+          .maybeSingle();
+
         pushUndo({
           fecha_asignacion: fechaDB,
-          old_id_agente: oldRes.id_agente,
-          old_id_dispositivo: disp.id,
+          id_asignacion: existingRow?.id_asignacion,  // Ruta A: undo por PK ✅
+          old_id_agente: oldRes.id_agente,             // valor restaurado en el undo
+          old_id_dispositivo: Number(disp.id),
           action_type: 'swap'
         });
 
@@ -542,7 +555,7 @@ export default function AsignacionesApp() {
           .from('menu')
           .update({ id_agente: newRes.id_agente })
           .eq('id_agente', oldRes.id_agente)
-          .eq('id_dispositivo', disp.id)
+          .eq('id_dispositivo', Number(disp.id))
           .eq('fecha_asignacion', fechaDB);
 
         if (!error) {
