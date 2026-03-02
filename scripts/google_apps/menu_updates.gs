@@ -68,6 +68,7 @@ function onOpen() {
   
   // Diagnóstico
   adminMenu.addItem('🧪 Test Conexión', 'testConnection');
+  adminMenu.addItem('🐞 Debug Convocatoria (Última Fila)', 'debugConvocatoriaLastRow');
   adminMenu.addItem('📊 Estado de Caché', 'showCacheStatus');
   
   // Cálculos manuales

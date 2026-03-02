@@ -56,11 +56,6 @@ function downloadConvocatoriaMesActual() {
   try {
     var data = fetchAll('vista_convocatoria_mes_activo', '*');
     
-    if (data.length === 0) {
-      ui.alert('ℹ️ No hay convocatorias para el mes actual');
-      return;
-    }
-    
     var sheet = getOrCreateSheet_('CONVOCATORIA');
     
     var headers = [
@@ -68,6 +63,17 @@ function downloadConvocatoriaMesActual() {
       'estado', 'turno_cancelado', 'motivo_cambio', 'cant_horas',
       'id_plani', 'id_agente', 'id_turno', 'sync_status'
     ];
+
+    // 1. Limpiar siempre
+    sheet.clear();
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, headers.length);
+    
+    if (data.length === 0) {
+      ui.alert('ℹ️ No hay convocatorias para el mes actual (Hoja limpiada)');
+      return;
+    }
     
     var rows = data.map(function(c) {
       return [
@@ -86,15 +92,10 @@ function downloadConvocatoriaMesActual() {
         '✅'
       ];
     });
-    
-    sheet.clear();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+
     if (rows.length > 0) {
       sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
     }
-    
-    sheet.setFrozenRows(1);
-    sheet.autoResizeColumns(1, headers.length);
     
     ui.alert('✅ ' + rows.length + ' convocatorias del mes actual descargadas');
     
@@ -131,11 +132,6 @@ function downloadConvocatoriaMes() {
       mes: mes
     });
     
-    if (data.length === 0) {
-      ui.alert('ℹ️ No hay datos para ' + mes + '/' + anio);
-      return;
-    }
-    
     var sheet = getOrCreateSheet_('CONVOCATORIA');
     
     var headers = [
@@ -144,6 +140,17 @@ function downloadConvocatoriaMes() {
       'id_plani', 'id_agente', 'id_turno', 'sync_status'
     ];
     
+    // 1. Limpiar siempre
+    sheet.clear();
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, headers.length);
+    
+    if (data.length === 0) {
+      ui.alert('ℹ️ No hay datos para ' + mes + '/' + anio + ' (Hoja limpiada)');
+      return;
+    }
+
     var rows = data.map(function(c) {
       return [
         false,
@@ -162,9 +169,7 @@ function downloadConvocatoriaMes() {
         '✅'
       ];
     });
-    
-    sheet.clear();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+
     if (rows.length > 0) {
       sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
       
@@ -172,6 +177,7 @@ function downloadConvocatoriaMes() {
       var rule = SpreadsheetApp.newDataValidation().requireCheckbox().build();
       checkboxRange.setDataValidation(rule);
     }
+
     
     sheet.setFrozenRows(1);
     sheet.autoResizeColumns(1, headers.length);

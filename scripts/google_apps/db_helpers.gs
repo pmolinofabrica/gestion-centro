@@ -277,14 +277,15 @@ function upsertRecord(table, record, uniqueKey) {
   };
   
   // Header para upsert
-  options.headers['Prefer'] = 'resolution=merge-duplicates';
+  // Header para upsert
+  options.headers['Prefer'] = 'resolution=merge-duplicates, return=representation';
   
   var response = UrlFetchApp.fetch(url, options);
   var code = response.getResponseCode();
   var body = response.getContentText();
   
   if (code >= 200 && code < 300) {
-    return { success: true };
+    return { success: true, data: body ? JSON.parse(body) : null };
   } else {
     return { success: false, error: 'HTTP ' + code + ': ' + body.substring(0, 100) };
   }

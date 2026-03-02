@@ -12,6 +12,8 @@ DROP CONSTRAINT IF EXISTS uq_plani_dia_turno;
 
 -- 1.3 Crear nuevo constraint UNIQUE con grupo
 ALTER TABLE planificacion 
+DROP CONSTRAINT IF EXISTS uq_plani_dia_turno_grupo;
+ALTER TABLE planificacion 
 ADD CONSTRAINT uq_plani_dia_turno_grupo UNIQUE (id_dia, id_turno, grupo);
 
 -- 1.4 Agregar columna 'id_turno' a capacitaciones para normalización
@@ -19,6 +21,8 @@ ALTER TABLE capacitaciones
 ADD COLUMN IF NOT EXISTS id_turno INTEGER REFERENCES turnos(id_turno);
 
 -- 1.5 Crear constraint UNIQUE en capacitaciones para evitar duplicados
+ALTER TABLE capacitaciones 
+DROP CONSTRAINT IF EXISTS uq_capacitaciones_dia_turno_grupo;
 ALTER TABLE capacitaciones 
 ADD CONSTRAINT uq_capacitaciones_dia_turno_grupo UNIQUE (id_dia, id_turno, grupo);
 
@@ -155,18 +159,12 @@ $$;
 
 /**
  * rpc_guardar_participantes_grupo
- * Asigna residentes a una capacitación específica (Grupo).
+ * Asigna y desasigna residentes a una capacitación explícita
  *
  * @param payload JSONB: Objeto { 
  *    "id_cap": int, 
- *    "grupo": string, 
- *    "participantes": [id_agente, id_agente...] 
+ *    "participantes": [ {"id_agente": int, "asistio": boolean} ] 
  * }
- *
- * Lógica:
- * - Recibe ID de capacitación y el Grupo (A, B, C...).
- * - Recibe lista completa de IDs de agentes que deben estar en ese grupo.
- * - Estrategia "sync": Elimina asignaciones previas para ese id_cap + grupo, e inserta la nueva lista.
  */
 CREATE OR REPLACE FUNCTION rpc_guardar_participantes_grupo(payload JSONB)
 RETURNS JSONB
@@ -175,36 +173,38 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_id_cap INT;
-    v_grupo TEXT;
-    v_id_agente INT;
-    v_participantes JSONB;
+    item JSONB;
     v_inserted INT := 0;
 BEGIN
     v_id_cap := (payload->>'id_cap')::INT;
-    v_grupo := payload->>'grupo';
-    v_participantes := payload->'participantes';
 
-    IF v_id_cap IS NULL OR v_grupo IS NULL THEN
-         RETURN jsonb_build_object('success', false, 'message', 'Faltan parámetros id_cap o grupo');
+    IF v_id_cap IS NULL THEN
+         RETURN jsonb_build_object('success', false, 'message', 'Falta id_cap');
     END IF;
 
-    DELETE FROM capacitaciones_participantes
-    WHERE id_cap = v_id_cap
-      AND grupo = v_grupo;
-
-    FOR v_id_agente IN SELECT * FROM jsonb_array_elements_text(v_participantes)
+    FOR item IN SELECT * FROM jsonb_array_elements(payload->'participantes')
     LOOP
-        INSERT INTO capacitaciones_participantes (id_cap, id_agente, grupo)
-        VALUES (v_id_cap, v_id_agente, v_grupo)
-        ON CONFLICT (id_cap, id_agente) 
-        DO UPDATE SET grupo = EXCLUDED.grupo;
+        IF COALESCE((item->>'asistio')::BOOLEAN, FALSE) = TRUE THEN
+            -- Checkbox marcado: Insertar o actualizar como Asistió
+            INSERT INTO capacitaciones_participantes (id_cap, id_agente, asistio)
+            VALUES (v_id_cap, (item->>'id_agente')::INT, TRUE)
+            ON CONFLICT (id_cap, id_agente) 
+            DO UPDATE SET asistio = TRUE;
+        ELSE
+            -- Checkbox vacío: Eliminar el registro (limpieza de matriz)
+            -- IMPORTANTE: NO eliminar si fue marcado por el trigger de Inasistencia Automática
+            DELETE FROM capacitaciones_participantes
+            WHERE id_cap = v_id_cap 
+              AND id_agente = (item->>'id_agente')::INT 
+              AND (observaciones IS NULL OR observaciones NOT LIKE '%[Auto: Inasistencia%');
+        END IF;
         
         v_inserted := v_inserted + 1;
     END LOOP;
 
     RETURN jsonb_build_object(
         'success', true,
-        'message', format('Asignados %s residentes al Grupo %s', v_inserted, v_grupo)
+        'message', format('Actualizados %s residentes en la cap %s', v_inserted, v_id_cap)
     );
 EXCEPTION WHEN OTHERS THEN
     RETURN jsonb_build_object(

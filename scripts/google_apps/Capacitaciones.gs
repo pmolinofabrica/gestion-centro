@@ -4,16 +4,33 @@
  * Dependencias: db_helpers.gs
  */
 
-const HOJA_MAESTRO = "MAESTRO_CAPACITACIONES";
-const HOJA_MATRIZ_DISP = "cap_disp";
-const HOJA_MATRIZ_RES = "cap_residentes";
+// CONSTANTES DINÁMICAS
+const SCRIPT_PROP_ANIO = "CAPACITACIONES_ANIO_ACTIVO";
+
+function getAnioContexto() {
+  const props = PropertiesService.getScriptProperties();
+  const stored = props.getProperty(SCRIPT_PROP_ANIO);
+  return stored ? parseInt(stored) : new Date().getFullYear();
+}
+
+function setAnioContexto(anio) {
+  PropertiesService.getScriptProperties().setProperty(SCRIPT_PROP_ANIO, String(anio));
+}
+
+function getHojaMaestro(anio) { return `capacitaciones ${anio}`; }
+function getHojaMatrizDisp(anio) { return `cap_disp ${anio}`; }
+function getHojaMatrizRes(anio) { return `cap_residentes ${anio}`; }
+
+function getHojaVista(anio) { return `vista_capacitados ${anio}`; }
+function getHojaDispositivos(anio) { return `dispositivos ${anio}`; }
 
 /**
  * Menú contextual
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Capacitaciones 2026')
+  const anio = getAnioContexto();
+  ui.createMenu(`Capacitaciones ${anio}`)
     .addItem('1. Sincronizar Maestro', 'sincronizarConPlanificacion')
     .addSeparator()
     .addItem('2. Actualizar Matriz Dispositivos', 'renderizarMatrizDispositivos')
@@ -21,9 +38,50 @@ function onOpen() {
     .addSeparator()
     .addItem('4. Actualizar Matriz Residentes', 'renderizarMatrizResidentes')
     .addItem('5. Guardar Matriz Residentes', 'saveMatrizResidentes')
+    .addItem('6. Vista Planificación (Historial)', 'renderizarMatrizCertificaciones')
+    .addItem('7. Vista Operativa (Habilidades Hoy)', 'renderizarVistaOperativa')
     .addSeparator()
-    .addItem('6. Ver Vista Capacitados (Solo Lectura)', 'renderizarMatrizCertificaciones')
+    .addItem('8. Actualizar Lista Dispositivos', 'renderizarListaDispositivos')
+    .addItem('9. Guardar Lista Dispositivos', 'saveListaDispositivos')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Admin / Avanzado')
+        .addItem('Cambiar Año de Contexto', 'cambiarAnioContexto'))
     .addToUi();
+}
+
+
+// =============================================================================
+// ADMIN: CAMBIAR AÑO
+// =============================================================================
+
+function cambiarAnioContexto() {
+   const ui = SpreadsheetApp.getUi();
+   const current = getAnioContexto();
+   const prompt = ui.prompt('Cambiar Año de Contexto', `Año actual: ${current}\n\nIngrese el nuevo año (ej. 2026) para cambiar de espacio de trabajo.\nEsto actualizará todas las pestañas al año seleccionado.`, ui.ButtonSet.OK_CANCEL);
+   
+   if (prompt.getSelectedButton() !== ui.Button.OK) return;
+   
+   const input = prompt.getResponseText().trim();
+   const nuevoAnio = parseInt(input);
+   
+   if (!nuevoAnio || isNaN(nuevoAnio)) {
+       ui.alert('Año inválido');
+       return;
+   }
+
+   setAnioContexto(nuevoAnio);
+   
+   // Actualizar automáticamente todas las pestañas para el nuevo año
+   try {
+     sincronizarConPlanificacion();
+     renderizarMatrizDispositivos();
+     renderizarMatrizResidentes();
+     renderizarMatrizCertificaciones();
+     renderizarListaDispositivos();
+     ui.alert(`✅ Contexto cambiado al año ${nuevoAnio}.\n\nSe han generado/actualizado las 5 pestañas correspondientes.`);
+   } catch (e) {
+     ui.alert(`⚠️ Contexto cambiado a ${nuevoAnio}, pero hubo error actualizando hojas: ${e.message}`);
+   }
 }
 
 // =============================================================================
@@ -32,21 +90,14 @@ function onOpen() {
 
 function sincronizarConPlanificacion() {
   const ui = SpreadsheetApp.getUi();
+  const anio = getAnioContexto();
   
-  const currentYear = new Date().getFullYear();
-  const prompt = ui.prompt('Sincronizar Capacitaciones', 'Ingrese el año a sincronizar:', ui.ButtonSet.OK_CANCEL);
-  
-  if (prompt.getSelectedButton() !== ui.Button.OK) return;
-  
-  const anioInput = prompt.getResponseText().trim();
-  const anio = anioInput ? parseInt(anioInput) : currentYear;
-  
-  if (isNaN(anio)) {
-      ui.alert('Año inválido.');
-      return;
-  }
+  // Confirmación simple (el año ya está seleccionado por contexto)
+  /* Opcional: Confirmar si el usuario quiere realmente sobreescribir */
+  /* const resp = ui.alert(`¿Sincronizar año ${anio}?`, ui.ButtonSet.YES_NO);
+     if (resp !== ui.Button.YES) return; */
 
-  const sheet = getOrCreateSheet_(HOJA_MAESTRO);
+  const sheet = getOrCreateSheet_(getHojaMaestro(anio));
   
   // Headers
   const headers = ["ID_Cap", "Fecha", "Turno", "Grupo", "Tema", "Observaciones", "Tiempo Total (min)", "Residentes Asignados"];
@@ -129,34 +180,43 @@ function sincronizarConPlanificacion() {
 // =============================================================================
 
 function renderizarMatrizDispositivos() {
-  const sheet = getOrCreateSheet_(HOJA_MATRIZ_DISP);
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaMatrizDisp(anio));
   sheet.clear(); 
 
-  const sheetMaestro = getOrCreateSheet_(HOJA_MAESTRO);
+  const sheetMaestro = getOrCreateSheet_(getHojaMaestro(anio));
   const datosMaestro = sheetMaestro.getDataRange().getValues();
   if (datosMaestro.length <= 1) {
     SpreadsheetApp.getUi().alert('Primero debe sincronizar el Maestro de Capacitaciones.');
     return;
   }
   
-  // Capacitaciones con formato fecha DD/MM/AA
+  // Capacitaciones
   const capacitaciones = datosMaestro.slice(1).map(r => {
     let fechaStr = r[1];
     if (r[1] instanceof Date) {
         const d = r[1];
         fechaStr = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(-2)}`;
     }
-    return { id: r[0], label: `${fechaStr} - ${r[4]} (G:${r[3]})` };
+    return { id: r[0], fecha: fechaStr, grupo: r[3], tema: r[4] };
   });
 
-  // Dispositivos
-  const todosDispositivos = fetchAll('dispositivos', 'id_dispositivo, nombre_dispositivo, activo');
+  // Dispositivos y Ordenamiento
+  const todosDispositivos = fetchAll('dispositivos', 'id_dispositivo, nombre_dispositivo, piso_dispositivo, activo');
   const dispositivos = todosDispositivos.filter(d => d.activo === true || d.activo === 1);
   
   if (dispositivos.length === 0) {
       SpreadsheetApp.getUi().alert('No hay dispositivos activos.');
       return;
   }
+
+  // Ordenar: Piso ASC, luego Nombre ASC
+  dispositivos.sort((a, b) => {
+      const pisoA = a.piso_dispositivo || 999;
+      const pisoB = b.piso_dispositivo || 999;
+      if (pisoA !== pisoB) return pisoA - pisoB;
+      return a.nombre_dispositivo.localeCompare(b.nombre_dispositivo);
+  });
   
   // Tiempos existentes
   const relaciones = fetchAll('capacitaciones_dispositivos', 'id_cap, id_dispositivo, tiempo_minutos');
@@ -165,28 +225,42 @@ function renderizarMatrizDispositivos() {
       mapRelaciones.set(`${r.id_cap}-${r.id_dispositivo}`, r.tiempo_minutos || 0); 
   });
 
-  // Headers: ID_Cap, Capacitacion, luego por cada dispositivo: [NOMBRE_CORTO]
-  // El usuario ingresa tiempo directamente. Si hay tiempo > 0, está asignado.
-  const headers = ["ID_Cap", "Capacitación"];
+  // Headers
+  const headers = ["ID_Cap", "Fecha", "Grupo", "Tema"];
   const colIds = [];
+  const headerColors = ["#cfe2f3", "#cfe2f3", "#cfe2f3", "#cfe2f3"]; // Default colors for first four cols
+
   dispositivos.forEach(d => {
-      // Nombre corto (primeras 15 chars)
-      const nombre = d.nombre_dispositivo.length > 15 ? d.nombre_dispositivo.substring(0,15) + '…' : d.nombre_dispositivo;
+      const nombre = d.nombre_dispositivo.length > 20 ? d.nombre_dispositivo.substring(0,20) + '…' : d.nombre_dispositivo;
       headers.push(nombre);
       colIds.push(d.id_dispositivo);
+      
+      // Color coding logic
+      let color = "#ffffff";
+      switch (d.piso_dispositivo) {
+          case 1: color = "#fff2cc"; break; // Amarillo
+          case 2: color = "#ea9999"; break; // Rojo
+          case 3: color = "#a4c2f4"; break; // Azul
+          case 4: color = "#b6d7a8"; break; // Verde
+          default: color = "#eeeeee";
+      }
+      headerColors.push(color);
   });
   
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setValues([headers])
        .setFontWeight("bold")
-       .setBackground("#cfe2f3")
        .setWrap(true);
+  
+  // Aplicar colores de fondo
+  headerRange.setBackgrounds([headerColors]);
 
   // Guardar metadata en nota
   sheet.getRange("A1").setNote(JSON.stringify(colIds));
 
   const outputGrid = [];
   capacitaciones.forEach((cap) => {
-      const row = [cap.id, cap.label];
+      const row = [cap.id, cap.fecha, cap.grupo || "-", cap.tema || ""];
       dispositivos.forEach(disp => {
           const tiempo = mapRelaciones.get(`${cap.id}-${disp.id_dispositivo}`);
           row.push(tiempo > 0 ? tiempo : "");
@@ -199,24 +273,25 @@ function renderizarMatrizDispositivos() {
       sheet.getRange(startRow, 1, outputGrid.length, outputGrid[0].length).setValues(outputGrid);
       
       // Validación numérica
-      const inputRange = sheet.getRange(startRow, 3, outputGrid.length, dispositivos.length);
+      const inputRange = sheet.getRange(startRow, 5, outputGrid.length, dispositivos.length);
       const rule = SpreadsheetApp.newDataValidation()
         .requireNumberGreaterThanOrEqualTo(0)
         .setAllowInvalid(true)
         .setHelpText('Ingrese minutos (0 = no asignado)')
         .build();
       inputRange.setDataValidation(rule);
-      inputRange.setBackground("#fff9c4"); // Amarillo claro para indicar zona editable
+      inputRange.setBackground("#fff9c4"); 
   }
   
-  sheet.setFrozenColumns(2);
+  sheet.setFrozenColumns(4);
   sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, 2);
-  SpreadsheetApp.getUi().alert('Matriz generada. Ingrese minutos en las celdas amarillas.');
+  sheet.autoResizeColumns(1, 4);
+  SpreadsheetApp.getUi().alert('Matriz generada. Dispositivos ordenados por ubicación.');
 }
 
 function saveMatrizDispositivos() {
-  const sheet = getOrCreateSheet_(HOJA_MATRIZ_DISP);
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaMatrizDisp(anio));
   const data = sheet.getDataRange().getValues();
   
   if (data.length < 2) return; 
@@ -235,7 +310,7 @@ function saveMatrizDispositivos() {
       const idCap = row[0];
       
       for (let j = 0; j < colIds.length; j++) {
-          const val = row[2 + j]; 
+          const val = row[4 + j]; 
           const idDisp = colIds[j];
           let tiempo = 0;
           
@@ -267,10 +342,11 @@ function saveMatrizDispositivos() {
 // =============================================================================
 
 function renderizarMatrizResidentes() {
-  const sheet = getOrCreateSheet_(HOJA_MATRIZ_RES);
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaMatrizRes(anio));
   sheet.clear(); 
 
-  const sheetMaestro = getOrCreateSheet_(HOJA_MAESTRO);
+  const sheetMaestro = getOrCreateSheet_(getHojaMaestro(anio));
   const datosMaestro = sheetMaestro.getDataRange().getValues();
   if (datosMaestro.length <= 1) {
     SpreadsheetApp.getUi().alert('Primero debe sincronizar el Maestro.');
@@ -284,15 +360,21 @@ function renderizarMatrizResidentes() {
         const d = r[1];
         fechaStr = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(-2)}`;
     }
-    return { id: r[0], label: `${fechaStr} - G:${r[3]}`, grupo: r[3] };
+    return { id: r[0], fecha: fechaStr, grupo: r[3], tema: r[4] };
   });
 
   // Residentes activos - Columna cohorte (no anio_residencia)
   const todosAgentes = fetchAll('datos_personales', 'id_agente, nombre, apellido, cohorte, activo');
   Logger.log('DEBUG - Total agentes tabla: ' + todosAgentes.length);
   
-  const agentes = todosAgentes.filter(a => a.activo === true || a.activo === 1 || a.activo === 't');
-  Logger.log('DEBUG - Agentes activos filtrados: ' + agentes.length);
+  // Filtrar por ACTIVO y por AÑO (COHORTE)
+  // El usuario solicitó ver solo los del año seleccionado
+  const agentes = todosAgentes.filter(a => {
+      const p1 = (a.activo === true || a.activo === 1 || a.activo === 't');
+      const p2 = (a.cohorte === anio);
+      return p1 && p2;
+  });
+  Logger.log('DEBUG - Agentes filtrados (Activos + Cohorte ' + anio + '): ' + agentes.length);
   
   if (agentes.length === 0) {
       SpreadsheetApp.getUi().alert('No hay residentes activos. Total en tabla: ' + todosAgentes.length + '. Revisar logs.');
@@ -302,15 +384,22 @@ function renderizarMatrizResidentes() {
   // Ordenar por apellido
   agentes.sort((a, b) => a.apellido.localeCompare(b.apellido));
   
-  // Asignaciones existentes
-  const asignaciones = fetchAll('capacitaciones_participantes', 'id_cap, id_agente, asistio');
+  // Asignaciones persistidas y sugeridas por convocatoria
+  const resultRPC = callRpc('rpc_obtener_convocados_matriz', { anio_filtro: anio });
+  
+  if (!resultRPC.success) {
+      SpreadsheetApp.getUi().alert('Error obteniendo convocados: ' + resultRPC.error);
+      return;
+  }
+  
   const mapAsignaciones = new Map();
-  asignaciones.forEach(r => {
-      mapAsignaciones.set(`${r.id_cap}-${r.id_agente}`, r.asistio === true || r.asistio === 1 ? 'S' : 'N'); 
+  const datosConvocados = resultRPC.data || [];
+  datosConvocados.forEach(r => {
+      mapAsignaciones.set(`${r.id_cap}-${r.id_agente}`, true); 
   });
 
   // Headers
-  const headers = ["ID_Cap", "Capacitación"];
+  const headers = ["ID_Cap", "Fecha", "Grupo", "Tema"];
   const colIds = [];
   agentes.forEach(a => {
       // Apellido + inicial + cohorte
@@ -329,7 +418,7 @@ function renderizarMatrizResidentes() {
 
   const outputGrid = [];
   capacitaciones.forEach((cap) => {
-      const row = [cap.id, cap.label];
+      const row = [cap.id, cap.fecha, cap.grupo || "-", cap.tema || ""];
       agentes.forEach(ag => {
           const asignado = mapAsignaciones.has(`${cap.id}-${ag.id_agente}`);
           row.push(asignado); // Checkbox true/false
@@ -342,17 +431,18 @@ function renderizarMatrizResidentes() {
       sheet.getRange(startRow, 1, outputGrid.length, outputGrid[0].length).setValues(outputGrid);
       
       // Insertar checkboxes
-      sheet.getRange(startRow, 3, outputGrid.length, agentes.length).insertCheckboxes();
+      sheet.getRange(startRow, 5, outputGrid.length, agentes.length).insertCheckboxes();
   }
   
-  sheet.setFrozenColumns(2);
+  sheet.setFrozenColumns(4);
   sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, 2);
+  sheet.autoResizeColumns(1, 4);
   SpreadsheetApp.getUi().alert('Matriz residentes generada. Marque checkboxes para asignar.');
 }
 
 function saveMatrizResidentes() {
-  const sheet = getOrCreateSheet_(HOJA_MATRIZ_RES);
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaMatrizRes(anio));
   const data = sheet.getDataRange().getValues();
   
   if (data.length < 2) return; 
@@ -373,10 +463,22 @@ function saveMatrizResidentes() {
       const participantes = [];
       
       for (let j = 0; j < colIds.length; j++) {
-          const isChecked = row[2 + j]; 
-          if (isChecked === true) {
-              participantes.push(colIds[j]);
+          const isChecked = row[4 + j]; 
+          
+          let asistioCheck = false;
+          if (isChecked === true || isChecked === 1) {
+              asistioCheck = true;
+          } else if (typeof isChecked === 'string') {
+              const s = isChecked.trim().toUpperCase();
+              if (s === 'TRUE' || s === 'VERDADERO' || s === 'V' || s === 'SÍ' || s === 'SI' || s === 'YES') {
+                  asistioCheck = true;
+              }
           }
+          
+          participantes.push({
+              "id_agente": colIds[j],
+              "asistio": asistioCheck
+          });
       }
       porCapacitacion.set(idCap, participantes);
   }
@@ -390,7 +492,6 @@ function saveMatrizResidentes() {
       const result = callRpc('rpc_guardar_participantes_grupo', {
           payload: {
               id_cap: idCap,
-              grupo: 'A',
               participantes: participantes
           }
       });
@@ -409,65 +510,90 @@ function saveMatrizResidentes() {
 // MATRIZ DE CERTIFICACIONES (Solo Lectura)
 // =============================================================================
 
+// =============================================================================
+// VISTAS Y REPORTES
+// =============================================================================
+
 function renderizarMatrizCertificaciones() {
-  const HOJA_CERT = "vista_capacitados";
-  const sheet = getOrCreateSheet_(HOJA_CERT);
+  // Alias: Vista Planificación / Histórica
+  renderizarVistaGeneral(false);
+}
+
+function renderizarVistaOperativa() {
+  // Vista Operativa (Solo Hoy + Asistió)
+  renderizarVistaGeneral(true);
+}
+
+/**
+ * Renderiza vista de capacitaciones.
+ * @param {boolean} esOperativa - Si true, usa rpc_obtener_matriz_habilidades_hoy y formato operativo.
+ */
+function renderizarVistaGeneral(esOperativa) {
+  const anio = getAnioContexto();
+  // Nombres de hojas distintos
+  const nombreHoja = esOperativa ? `vista_operativa ${anio}` : getHojaVista(anio);
+  
+  const sheet = getOrCreateSheet_(nombreHoja);
   sheet.clear();
   
-  // Usar nuevo RPC que devuelve datos agregados (< 1000 filas)
-  const resultRPC = callRpc('rpc_obtener_matriz_certificaciones', {});
+  // Seleccionar RPC y Título
+  const rpcName = esOperativa ? 'rpc_obtener_matriz_habilidades_hoy' : 'rpc_obtener_matriz_certificaciones';
+  const tituloMock = esOperativa ? 'VISTA OPERATIVA (HABILIDADES AL DÍA)' : 'VISTA GENERAL (HISTORIAL COMPLETADO)';
+  const colorBg = esOperativa ? '#d9ead3' : '#f4cccc'; // Verde vs Rojo suave
+  
+  // Llamada RPC
+  const resultRPC = callRpc(rpcName, { anio_filtro: anio });
   
   if (!resultRPC.success) {
-       SpreadsheetApp.getUi().alert('Error obteniendo matriz: ' + resultRPC.error);
+       SpreadsheetApp.getUi().alert('Error obteniendo datos: ' + resultRPC.error);
        Logger.log(resultRPC.error);
        return;
   }
   
-  const certificaciones = resultRPC.data;
-  Logger.log('Registros encontrados (agregados): ' + (certificaciones ? certificaciones.length : 0));
-  
-  if (!certificaciones || certificaciones.length === 0) {
-      SpreadsheetApp.getUi().alert('No hay certificaciones registradas.');
+  const datos = resultRPC.data || [];
+  if (datos.length === 0) {
+      SpreadsheetApp.getUi().alert(`No hay datos para la vista ${esOperativa ? 'Operativa' : 'General'}.`);
       return;
   }
   
-  // Obtener listas únicas de dispositivos y residentes
-  const dispositivos = [...new Map(certificaciones.map(c => [c.id_dispositivo, {id: c.id_dispositivo, nombre: c.nombre_dispositivo}])).values()];
-  const residentes = [...new Map(certificaciones.map(c => [c.id_agente, {id: c.id_agente, nombre: c.nombre_completo}])).values()];
+  Logger.log(`Registros encontrados (${esOperativa ? 'Operativa' : 'General'}): ${datos.length}`);
+  
+  // Procesar datos para matriz (Pivoting)
+  const dispositivos = [...new Map(datos.map(c => [c.id_dispositivo, {id: c.id_dispositivo, nombre: c.nombre_dispositivo}])).values()];
+  const residentes = [...new Map(datos.map(c => [c.id_agente, {id: c.id_agente, nombre: c.nombre_completo}])).values()];
   
   // Ordenar
   dispositivos.sort((a, b) => a.nombre.localeCompare(b.nombre));
   residentes.sort((a, b) => a.nombre.localeCompare(b.nombre));
   
-  // Crear mapa de certificaciones con fechas (ya viene agregado del RPC)
   const mapCert = new Map();
-  certificaciones.forEach(c => {
-      const key = `${c.id_dispositivo}-${c.id_agente}`;
-      mapCert.set(key, c.fecha_mas_reciente);
-  });
+  datos.forEach(c => mapCert.set(`${c.id_dispositivo}-${c.id_agente}`, c.fecha_mas_reciente));
   
   // Headers
-  const headers = ["Dispositivo", ...residentes.map(r => {
-      const partes = r.nombre.split(' ');
-      return partes.length > 1 ? `${partes[partes.length-1]}, ${partes[0].charAt(0)}.` : r.nombre.substring(0,12);
-  })];
+  const headers = ["Dispositivo", ...residentes.map(r => r.nombre.substring(0,12))];
   
+  // Render Headers
   sheet.getRange(1, 1, 1, headers.length).setValues([headers])
        .setFontWeight("bold")
-       .setBackground("#f4cccc")
+       .setBackground(colorBg)
        .setWrap(true)
        .setVerticalAlignment("bottom");
+       
+  // Nota Informativa
+  sheet.getRange("A1").setNote(`${tituloMock}\nGenerado: ${new Date().toLocaleString()}`);
   
-  // Datos
+  // Grid
   const outputGrid = [];
   dispositivos.forEach(disp => {
       const row = [disp.nombre];
       residentes.forEach(res => {
           const fecha = mapCert.get(`${disp.id}-${res.id}`);
           if (fecha) {
-              // Formatear fecha como DD/MM/AA
-              const d = new Date(fecha);
-              const fechaStr = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(-2)}`;
+              const partes = String(fecha).split('T')[0].split('-');
+              let fechaStr = fecha;
+              if (partes.length === 3) {
+                  fechaStr = `${partes[2]}/${partes[1]}/${partes[0].slice(-2)}`;
+              }
               row.push(fechaStr);
           } else {
               row.push("");
@@ -479,11 +605,9 @@ function renderizarMatrizCertificaciones() {
   if (outputGrid.length > 0) {
       const dataRange = sheet.getRange(2, 1, outputGrid.length, outputGrid[0].length);
       dataRange.setValues(outputGrid);
-      
-      // Formatear checkmarks
       dataRange.setHorizontalAlignment("center");
       
-      // Colorear filas alternadas
+      // Banding
       for (let i = 0; i < outputGrid.length; i++) {
           const rowRange = sheet.getRange(2 + i, 1, 1, outputGrid[0].length);
           rowRange.setBackground(i % 2 === 0 ? "#ffffff" : "#f9f9f9");
@@ -494,22 +618,139 @@ function renderizarMatrizCertificaciones() {
   sheet.setFrozenRows(1);
   sheet.autoResizeColumn(1);
   
-  // Proteger hoja (solo lectura)
-  const protection = sheet.protect().setDescription('Vista de capacitados - Solo lectura');
-  protection.setWarningOnly(true);
+  SpreadsheetApp.getUi().alert(`${tituloMock} generada con ${datos.length} registros.`);
+}
+
+// =============================================================================
+// GESTIÓN DE DISPOSITIVOS (CRUD)
+// =============================================================================
+
+function renderizarListaDispositivos() {
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaDispositivos(anio));
   
-  SpreadsheetApp.getUi().alert(`Vista generada: ${dispositivos.length} dispositivos × ${residentes.length} residentes.\n\nMuestra fechas de capacitación. Hoja SOLO LECTURA.`);
-}
+  // Limpiar pero mantener headers si existen? Mejor repintar todo para consistencia
+  sheet.clear();
+  
+  // Columns: id, nombre, piso, activo, critico, min, opt
+  const datos = fetchAll('dispositivos', 'id_dispositivo, nombre_dispositivo, piso_dispositivo, activo, es_critico, cupo_minimo, cupo_optimo');
+  
+  // Headers
+  const headers = ["ID (No editar)", "Nombre Dispositivo", "Piso / Ubicación", "Activo", "Es Crítico", "Cupo Mín", "Cupo Ópt"];
+  
+  sheet.getRange(1, 1, 1, headers.length)
+       .setValues([headers])
+       .setFontWeight("bold")
+       .setBackground("#d0e0e3"); // Celeste
+       
+  if (datos && datos.length > 0) {
+      // Ordenar por Piso ASC, luego Nombre ASC
+      datos.sort((a, b) => {
+          const pisoA = a.piso_dispositivo || 999;
+          const pisoB = b.piso_dispositivo || 999;
+          if (pisoA !== pisoB) return pisoA - pisoB;
+          return a.nombre_dispositivo.localeCompare(b.nombre_dispositivo);
+      });
+      
+      const rows = datos.map(d => [
+          d.id_dispositivo, 
+          d.nombre_dispositivo, 
+          d.piso_dispositivo || "",
+          d.activo,
+          d.es_critico,
+          d.cupo_minimo || 0,
+          d.cupo_optimo || 0
+      ]);
+      
+      const startRow = 2;
+      const numRows = rows.length;
+      sheet.getRange(startRow, 1, numRows, headers.length).setValues(rows);
+      
+      // Colorear columna Piso (Indice 2 en rows -> Columna 3 en Sheet)
+      const colorColumn = [];
+      for(let i=0; i<numRows; i++) {
+        const val = rows[i][2]; // piso_dispositivo
+        let color = "#ffffff";
+        switch(val) {
+          case 1: color = "#fff2cc"; break; // Amarillo
+          case 2: color = "#ea9999"; break; // Rojo
+          case 3: color = "#a4c2f4"; break; // Azul
+          case 4: color = "#b6d7a8"; break; // Verde
+        }
+        colorColumn.push([color]);
+      }
+      sheet.getRange(startRow, 3, numRows, 1).setBackgrounds(colorColumn);
 
-// =============================================================================
-// UTILIDADES
-// =============================================================================
-
-function getOrCreateSheet_(name) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
+      // Checkboxes para columna Activo (4) y Es Crítico (5)
+      sheet.getRange(startRow, 4, numRows, 1).insertCheckboxes();
+      sheet.getRange(startRow, 5, numRows, 1).insertCheckboxes();
   }
-  return sheet;
+  
+  sheet.autoResizeColumns(1, headers.length);
+  SpreadsheetApp.getUi().alert(`Lista de dispositivos actualizada (${datos.length} registros). Ordenado por piso.`);
 }
+
+function saveListaDispositivos() {
+  const ui = SpreadsheetApp.getUi();
+  const anio = getAnioContexto();
+  const sheet = getOrCreateSheet_(getHojaDispositivos(anio));
+  
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+  
+  let created = 0;
+  let updated = 0;
+  let errors = 0;
+  
+  // Empezar desde fila 2
+  for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      // Col indices: 0:ID, 1:Nombre, 2:Piso, 3:Activo, 4:Critico, 5:Min, 6:Opt
+      const id = row[0]; 
+      const nombre = row[1];
+      const piso = row[2];
+      const activo = row[3];
+      const critico = row[4];
+      const min = row[5];
+      const opt = row[6];
+      
+      if (!nombre) continue; // Skip filas vacías
+      
+      const payload = {
+          nombre_dispositivo: nombre,
+          piso_dispositivo: piso ? String(piso) : null,
+          activo: activo === true || activo === 1 || activo === 'TRUE',
+          es_critico: critico === true || critico === 1 || critico === 'TRUE',
+          cupo_minimo: min ? parseInt(min) : 0,
+          cupo_optimo: opt ? parseInt(opt) : 0
+      };
+      
+      if (id) {
+          // UPDATE
+          payload.id_dispositivo = id;
+          const res = upsertRecord('dispositivos', payload, 'id_dispositivo');
+          if (res.success) updated++;
+          else {
+              errors++;
+              Logger.log(`Error updating id ${id}: ${res.error}`);
+          }
+      } else {
+          // CREATE
+          const res = insertRow('dispositivos', payload);
+          if (res.success) created++;
+          else {
+               errors++;
+               Logger.log(`Error creating ${nombre}: ${res.error}`);
+          }
+      }
+  }
+  
+  ui.alert(`Sincronización finalizada:\n\n🆕 Creados: ${created}\n🔄 Actualizados: ${updated}\n❌ Errores: ${errors}`);
+  
+  // Refrescar
+  if (created > 0) {
+      renderizarListaDispositivos();
+  }
+}
+
+

@@ -11,6 +11,8 @@ function onOpen() {
         .addItem('📥 Descargar (Mensual)', 'downloadCalendarioDispositivos')
         .addItem('📊 Ver Estado Planificado', 'downloadEstadoCalendario')
         .addSeparator()
+        .addItem('📝 Generar Asignación Diaria (NUEVO)', 'generarPlantillaAsignacionDiaria')
+        .addSeparator()
         .addItem('🏗️ Generar Plantilla Diseño', 'generarPlantillaDiseño')
         .addItem('🚀 Subir Diseño Matriz', 'uploadDiseñoMatriz'))
     .addSeparator()
@@ -19,6 +21,7 @@ function onOpen() {
         .addItem('📤 Cargar Nuevos', 'uploadDispositivos'))
     .addSeparator()
     .addItem('📥 Descargar Historial Asignaciones', 'downloadAsignaciones')
+    .addItem('📚 Historial de Capacitaciones (VISTA)', 'downloadHistorialCapacitaciones')
     .addToUi();
 }
 
