@@ -39,23 +39,31 @@ function normalizarFecha_(val, anioContexto) {
     return Utilities.formatDate(d, 'America/Argentina/Buenos_Aires', 'yyyy-MM-dd');
   }
 
+  // Calcular el año actual para forzarlo y evitar errores de validación de los residentes (e.g. "0026", "2025")
+  var y = new Date().getFullYear();
+
   var s = String(val).trim();
 
   // "26/2" → DD/M sin año
   if (/^\d{1,2}\/\d{1,2}$/.test(s)) {
     var p = s.split('/');
-    return anioContexto + '-' + p[1].padStart(2,'0') + '-' + p[0].padStart(2,'0');
+    return y + '-' + p[1].padStart(2,'0') + '-' + p[0].padStart(2,'0');
   }
 
-  // "2/27/2026" o "2/27/0026" (bug de año en Google Forms)
+  // "2/27/2026" o "2/27/0026" (bug de año en Google Forms, M/D/YYYY original vs D/M/YYYY nuevo)
+  // Las Form responses actuales vienen como DD/MM/YYYY ej: 20/2/2026
   if (/^\d{1,2}\/\d{1,2}\/\d+$/.test(s)) {
     var p2 = s.split('/');
-    var y = parseInt(p2[2]); if (y < 100) y += 2000;
-    return y + '-' + p2[0].padStart(2,'0') + '-' + p2[1].padStart(2,'0');
+    // Ignoramos completamente el año tipeado por el usuario (p2[2]) y usamos el año forzado (y)
+    // p2[0] = DD, p2[1] = MM en los forms en Español
+    return y + '-' + p2[1].padStart(2,'0') + '-' + p2[0].padStart(2,'0');
   }
 
-  // Ya en formato correcto
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // Si ya viene en formato de Base de Datos, intentar arreglar el año también
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+     var p3 = s.split('-');
+     return y + '-' + p3[1] + '-' + p3[2];
+  }
 
   Logger.log('⚠️ normalizarFecha_: no se pudo parsear: ' + val);
   return null;
@@ -111,7 +119,26 @@ function onSubmitInasistencia(e) {
     // [0]MarcaTemporal [1]Email [2]Residente [3]Fecha [4]Motivo
     var nombreForm = row[2];
     var fechaDB    = normalizarFecha_(row[3]);
-    var motivo     = row[4] || 'No especificado';
+    var motivoRaw = row[4] || '';
+    
+    // Mapeo DAMA para reducir cardinalidad y agregar flags booleanos
+    // Valores validos en DB: 'medico', 'estudio', 'imprevisto', 'injustificada', 'otro_justificada'
+    var motivoFinal = 'otro_justificada';
+    var requiereCertificado = false;
+    var generaDescuento = false;
+
+    if (motivoRaw.indexOf('enfermedad') !== -1) {
+      motivoFinal = 'medico';
+      requiereCertificado = true;
+    } else if (motivoRaw.indexOf('estudio') !== -1) {
+      motivoFinal = 'estudio';
+      requiereCertificado = true;
+    } else if (motivoRaw.indexOf('imprevisto') !== -1) {
+      motivoFinal = 'imprevisto';
+    } else if (motivoRaw.indexOf('injustificada') !== -1) {
+      motivoFinal = 'injustificada';
+      generaDescuento = true;
+    }
 
     var idAgente = resolverIdAgente_(nombreForm);
     if (!idAgente || !fechaDB) {
@@ -122,11 +149,13 @@ function onSubmitInasistencia(e) {
     }
 
     var res = upsertRecord('inasistencias', {
-      id_agente:           idAgente,
-      fecha_inasistencia:  fechaDB,
-      motivo:              motivo,
-      fecha_aviso:         new Date().toISOString(),
-      estado:              'pendiente'
+      id_agente:            idAgente,
+      fecha_inasistencia:   fechaDB,
+      motivo:               motivoFinal,
+      requiere_certificado: requiereCertificado,
+      genera_descuento:     generaDescuento,
+      fecha_aviso:          new Date().toISOString(),
+      estado:               'pendiente'
     }, ['id_agente', 'fecha_inasistencia']);
 
     if (res.success) {

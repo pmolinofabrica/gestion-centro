@@ -63,6 +63,7 @@ export default function AsignacionesApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeDates, setActiveDates] = useState<string[]>([]); // Dynamic dates from DB
   const [dateTurnoMap, setDateTurnoMap] = useState<Record<string, number>>({}); // { '07/03': 45 }
+  const [inasistenciasDb, setInasistenciasDb] = useState<Record<string, { id_agente: number, motivo: string }[]>>({}); // { '07/03': [{id_agente, motivo}] }
 
   // Selection states 
   const [selectedResident, setSelectedResident] = useState<{ id: number, name: string, score: number, device: string, date: string } | null>(null);
@@ -497,6 +498,32 @@ export default function AsignacionesApp() {
           console.error("Error cargando tabla menu:", menuErr)
         }
 
+        // ====== FETCH INASISTENCIAS desde Supabase ======
+        try {
+          const { data: inasData } = await supabase
+            .from('inasistencias')
+            .select('id_agente, fecha_inasistencia, motivo');
+
+          if (inasData && inasData.length > 0) {
+            const inasMap: Record<string, { id_agente: number, motivo: string }[]> = {};
+            inasData.forEach((row: any) => {
+              if (!row.fecha_inasistencia) return;
+              const parts = row.fecha_inasistencia.split('-');
+              if (parts.length === 3) {
+                const uiDate = `${parts[2]}/${parts[1]}`;
+                if (!inasMap[uiDate]) inasMap[uiDate] = [];
+                // Evitar duplicados
+                if (!inasMap[uiDate].some(x => x.id_agente === row.id_agente)) {
+                  inasMap[uiDate].push({ id_agente: row.id_agente, motivo: row.motivo || 'otro' });
+                }
+              }
+            });
+            setInasistenciasDb(inasMap);
+          }
+        } catch (inasErr) {
+          console.error('Error cargando inasistencias:', inasErr);
+        }
+
       } catch (err) {
         console.error("Error cargando Supabase:", err);
       }
@@ -508,10 +535,18 @@ export default function AsignacionesApp() {
 
   // States for Execution Tab
   const [execDate, setExecDate] = useState("07/03");
-  const [absentResidents, setAbsentResidents] = useState<string[]>([]);
   const [showRestingModal, setShowRestingModal] = useState(false);
   const [showDevicesMenu, setShowDevicesMenu] = useState(false);
   const [expandedDeviceForAssignment, setExpandedDeviceForAssignment] = useState<string | null>(null);
+
+  // Helper: verificar si un agente tiene inasistencia para una fecha UI
+  const isAgentAbsent = (agentId: number, uiDate: string): boolean => {
+    return (inasistenciasDb[uiDate] || []).some(x => x.id_agente === agentId);
+  };
+  const getAbsenceMotivo = (agentId: number, uiDate: string): string => {
+    const found = (inasistenciasDb[uiDate] || []).find(x => x.id_agente === agentId);
+    return found?.motivo || '';
+  };
 
   const getScoreColor = (score: number) => {
     if (score >= 900) return "bg-emerald-100 text-emerald-800 border-emerald-300";
@@ -1058,6 +1093,7 @@ export default function AsignacionesApp() {
     const tier2: any[] = [];
     const tier3: any[] = [];
     const tier4: any[] = [];
+    const tierAbsent: any[] = []; // Inasistencias DB-backed
 
     allResidentsDb.forEach(res => {
       if (res.id === selectedResident.id) return;
@@ -1074,7 +1110,10 @@ export default function AsignacionesApp() {
         isBusy: !!currentLocation
       };
 
-      if (isCapacitado && isConvocado) tier1.push({ ...alt, type: "Capacitado" });
+      // Prioridad: si tiene inasistencia, va al tier bloqueado
+      if (isAgentAbsent(res.id, date)) {
+        tierAbsent.push({ ...alt, type: "Inasistencia", reason: `🚫 ${getAbsenceMotivo(res.id, date)}`, isBusy: true });
+      } else if (isCapacitado && isConvocado) tier1.push({ ...alt, type: "Capacitado" });
       else if (!isCapacitado && isConvocado) tier2.push({ ...alt, type: "NO Capacitado" });
       else if (isCapacitado && !isConvocado) tier3.push({ ...alt, type: "Cap. en Descanso" });
       else tier4.push({ ...alt, type: "No Cap. y en Descanso" });
@@ -1202,6 +1241,23 @@ export default function AsignacionesApp() {
                   ))}
                 </div>
               </div>
+
+              {/* INASISTENCIAS (Bloqueados) */}
+              {tierAbsent.length > 0 && (
+                <div className="mb-2 mt-3 pt-3 border-t border-stone-200">
+                  <span className="text-[9px] font-bold text-stone-700 uppercase tracking-wider mb-1.5 flex items-center gap-1 bg-stone-100 p-1 rounded">
+                    🚫 Inasistencias ({tierAbsent.length})
+                  </span>
+                  <div className="space-y-1 opacity-60">
+                    {tierAbsent.map((alt, i) => (
+                      <div key={i} className="w-full text-left p-1.5 rounded border border-stone-300 bg-stone-100 flex justify-between items-center">
+                        <div className="font-medium text-[10px] text-stone-700 line-through">{alt.name}</div>
+                        <span className="text-[9px] bg-stone-200 text-stone-600 p-0.5 px-1.5 rounded border border-stone-300">🔒</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
             </div>
           </div>
@@ -1627,20 +1683,24 @@ export default function AsignacionesApp() {
                                 {assignments.length === 0 ? (
                                   <div className="text-center text-slate-300 text-sm font-mono mt-2">—</div>
                                 ) : (
-                                  assignments.map((res: any, idx: number) => (
-                                    <button
-                                      key={idx}
-                                      onClick={(e) => { e.stopPropagation(); setSelectedResident({ id: res.id, name: res.name, score: res.score, device: device.name, date }); setSelectedDevice(null); }}
-                                      className={`text-left px-2 py-1.5 rounded border text-sm flex justify-between items-center transition-all 
-                                        ${getScoreColor(res.score)}
+                                  assignments.map((res: any, idx: number) => {
+                                    const absent = isAgentAbsent(res.id, date);
+                                    return (
+                                      <button
+                                        key={idx}
+                                        onClick={(e) => { e.stopPropagation(); setSelectedResident({ id: res.id, name: res.name, score: res.score, device: device.name, date }); setSelectedDevice(null); }}
+                                        className={`text-left px-2 py-1.5 rounded border text-sm flex justify-between items-center transition-all 
+                                        ${absent ? 'bg-stone-100 text-stone-600 border-stone-400 border-dashed' : getScoreColor(res.score)}
                                         ${selectedResident && selectedResident.name === res.name && selectedResident.date === date ? 'ring-2 ring-indigo-500 shadow-md scale-[1.03] z-10 font-bold' : 'hover:scale-[1.02] hover:shadow-sm'}`
-                                      }
-                                    >
-                                      <span className={`font-bold truncate max-w-[120px] text-xs ${agentGroups[res.id] === 'A' ? 'text-indigo-900 border-b-2 border-indigo-400' : agentGroups[res.id] === 'B' ? 'text-rose-900 border-b-2 border-rose-400' : 'text-slate-800'}`}>
-                                        {res.name}
-                                      </span>
-                                    </button>
-                                  ))
+                                        }
+                                      >
+                                        <span className={`font-bold truncate max-w-[120px] text-xs ${absent ? 'line-through text-stone-500 opacity-60' : agentGroups[res.id] === 'A' ? 'text-indigo-900 border-b-2 border-indigo-400' : agentGroups[res.id] === 'B' ? 'text-rose-900 border-b-2 border-rose-400' : 'text-slate-800'}`}>
+                                          {absent && <span className="mr-1">🚫</span>}{res.name}
+                                        </span>
+                                      </button>
+                                    )
+                                  })
+
                                 )}
                               </div>
                             </td>
@@ -1709,7 +1769,7 @@ export default function AsignacionesApp() {
                             arr.forEach((r: any) => occupancies[r.id] = devObj ? devObj.name : 'Otro');
                           });
 
-                          const isAbsent = (name: string) => absentResidents.includes(name);
+                          // Usar helper DB-backed para inasistencias
 
                           allResidentsDb.forEach((res) => {
                             const isConvocado = convocadosHoy ? convocadosHoy.has(res.id) : false;
@@ -1727,8 +1787,8 @@ export default function AsignacionesApp() {
                               reason: isConvocado ? (currentLocation ? `Ocupado en: ${currentLocation}` : "Libre hoy") : "Descanso"
                             };
 
-                            if (isAbsent(res.name)) {
-                              tierInasistencias.push({ ...alt, type: "Inasistencia" });
+                            if (isAgentAbsent(res.id, selectedDateFilter!)) {
+                              tierInasistencias.push({ ...alt, type: "Inasistencia", motivo: getAbsenceMotivo(res.id, selectedDateFilter!) });
                             } else if (isCapacitado && isConvocado) tier1.push(alt);
                             else if (!isCapacitado && isConvocado) tier2.push(alt);
                             else if (isCapacitado && !isConvocado) tier3.push(alt);
@@ -1811,14 +1871,14 @@ export default function AsignacionesApp() {
 
                               {/* INASISTENCIAS */}
                               {tierInasistencias.length > 0 && <div className="mb-2">
-                                <span className="text-[10px] font-bold text-rose-800 uppercase tracking-wider mb-1 block bg-rose-100 p-1 rounded">
+                                <span className="text-[10px] font-bold text-stone-600 uppercase tracking-wider mb-1 block bg-stone-100 p-1 rounded">
                                   🚫 Inasistencias ({tierInasistencias.length})
                                 </span>
                                 <div className="space-y-1">
                                   {tierInasistencias.map((alt, i) => (
-                                    <div key={i} className="w-full text-left p-1.5 rounded border border-rose-300 bg-rose-50 flex justify-between items-center">
-                                      <div className="font-medium text-[10px] text-rose-900 strike-through line-through opacity-80">{alt.name}</div>
-                                      <span className="text-[10px] bg-rose-200 text-rose-800 p-0.5 px-1.5 rounded border border-rose-300 shadow">🔒</span>
+                                    <div key={i} className="w-full text-left p-1.5 rounded border border-stone-300 bg-stone-50 flex justify-between items-center">
+                                      <div className="font-medium text-[10px] text-stone-500 strike-through line-through opacity-80">{alt.name}</div>
+                                      <span className="text-[10px] bg-stone-200 text-stone-600 p-0.5 px-1.5 rounded border border-stone-300 shadow">🔒</span>
                                     </div>
                                   ))}
                                 </div>
@@ -1956,29 +2016,34 @@ export default function AsignacionesApp() {
                 </div>
               </div>
 
-              {/* Inasistencia Tracker */}
-              {absentResidents.length > 0 && (
-                <div className="mb-6 bg-rose-50 border border-rose-200 rounded-2xl p-6 shadow-sm">
-                  <div className="flex items-start gap-4">
-                    <div className="bg-rose-100 p-3 rounded-full mt-1 border border-rose-200">
-                      <AlertCircle className="w-6 h-6 text-rose-600" />
+              {/* Inasistencia Tracker (DB-backed) */}
+              {(() => {
+                const inasHoy = inasistenciasDb[execDate] || [];
+                if (inasHoy.length === 0) return null;
+                const nameDict: Record<number, string> = {};
+                allResidentsDb.forEach(r => nameDict[r.id] = r.name);
+                return (
+                  <div className="mb-6 bg-stone-100 border-2 border-stone-300 rounded-2xl shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-stone-300 flex items-center justify-between bg-stone-200/50">
+                      <h4 className="font-bold text-stone-700 text-sm flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" />
+                        🚫 Inasistencias ({inasHoy.length})
+                      </h4>
                     </div>
-                    <div className="flex-1">
-                      <h3 className="font-bold text-rose-900 text-xl">({absentResidents.length}) Residente(s) Ausente(s) Declarado(s)</h3>
-                      <p className="text-sm font-medium text-rose-700 mb-5 mt-1">Acabas de bajar residentes de la grilla. Se generaron agujeros descubiertos en los cupos previstos.</p>
-
-                      <div className="flex gap-4">
-                        <button className="bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition-colors shadow flex items-center gap-2 border border-rose-800">
-                          ⚙️ Reasignación Automática
-                        </button>
-                        <button className="bg-white border-2 border-rose-200 text-rose-700 hover:bg-rose-50 hover:border-rose-300 text-sm font-bold px-5 py-2.5 rounded-xl transition-colors shadow-sm">
-                          🔄 Sugerir Intercambios Clave (1x1)
-                        </button>
-                      </div>
+                    <div className="p-4 flex flex-col gap-2">
+                      {inasHoy.map((inas, i) => (
+                        <div key={i} className="flex items-center justify-between p-3 rounded-xl border border-stone-300 bg-white/70">
+                          <div className="flex flex-col">
+                            <span className="font-bold text-sm text-stone-600 line-through opacity-70">{nameDict[inas.id_agente] || `Agente ${inas.id_agente}`}</span>
+                            <span className="text-[10px] font-bold text-stone-500 mt-0.5 uppercase tracking-wider">{inas.motivo}</span>
+                          </div>
+                          <span className="text-[10px] bg-stone-200 text-stone-600 p-1 px-2 rounded-md border border-stone-300 font-bold shadow-sm">🔒 Bloqueado</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Daily Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -2082,14 +2147,14 @@ export default function AsignacionesApp() {
                       </div>
                       <div className="p-4 flex-1 flex flex-col gap-3">
                         {assignments.map((res: any, i: number) => {
-                          const isAbsent = absentResidents.includes(res.name);
+                          const isAbsent = isAgentAbsent(res.id, execDate);
                           return (
-                            <div key={i} className={`flex flex-col gap-2 p-3 rounded-xl border transition-colors ${isAbsent ? 'bg-rose-50 border-rose-200 border-dashed' : 'bg-slate-50 border-slate-200'}`}>
+                            <div key={i} className={`flex flex-col gap-2 p-3 rounded-xl border transition-colors ${isAbsent ? 'bg-stone-50 border-stone-300 border-dashed' : 'bg-slate-50 border-slate-200'}`}>
 
                               <div className="flex items-center justify-between">
                                 <div className="flex flex-col">
-                                  <span className={`font-bold text-sm ${isAbsent ? 'text-rose-700 line-through opacity-60' : 'text-slate-900'}`}>{res.name}</span>
-                                  {isAbsent && <span className="text-[10px] text-rose-600 font-bold mt-0.5">MARCADO AUSENTE</span>}
+                                  <span className={`font-bold text-sm ${isAbsent ? 'text-stone-500 line-through opacity-70' : 'text-slate-900'}`}>{res.name}</span>
+                                  {isAbsent && <span className="text-[10px] text-stone-500 font-bold mt-0.5">MARCADO AUSENTE</span>}
                                 </div>
                                 <button
                                   onClick={async () => {
@@ -2199,7 +2264,10 @@ export default function AsignacionesApp() {
                           <span className="bg-indigo-100 text-indigo-800 text-xs px-1.5 rounded">{date}</span>
                         </div>
                         <div className="text-xs text-slate-500 mt-1 font-medium">Convocados: <span className="text-slate-800">{count}</span></div>
-                        <div className="text-[10px] font-bold uppercase text-indigo-600 mt-0.5 tracking-wider">Disp. Abiertos: {dCount}</div>
+                        <div className="text-[10px] font-bold uppercase text-indigo-600 mt-0.5 tracking-wider">Lugares Abiertos: {totalPlaces}</div>
+                        {(inasistenciasDb[date] || []).length > 0 && (
+                          <div className="text-[10px] font-bold uppercase text-rose-600 mt-0.5 tracking-wider">🚫 Inasistencias: {(inasistenciasDb[date] || []).length}</div>
+                        )}
                       </div>
                       <div className={`flex flex-col gap-1 items-end`}>
                         {libres > 0 && <span className="bg-rose-50 text-rose-600 border border-rose-200 text-[9px] px-1.5 py-0.5 rounded font-bold shadow-sm">{libres} LIBR.</span>}
@@ -2302,16 +2370,29 @@ export default function AsignacionesApp() {
                       </tr>
                       <tr>
                         <td className="sticky left-0 bg-slate-100 p-3 border-t border-r border-slate-300 font-bold text-sm text-slate-800 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] bg-indigo-50">
-                          Dispositivos Abiertos
+                          Lugares Abiertos
                         </td>
                         {activeDates.map(date => {
-                          let abiertos = 0;
+                          let totalPlaces = 0;
                           if (calendarDb[date]) {
-                            abiertos = Object.values(calendarDb[date]).filter(c => c > 0).length;
+                            totalPlaces = Object.values(calendarDb[date]).reduce((acc, curr) => acc + curr, 0);
                           }
                           return (
                             <td key={date} className="p-3 border-t border-r border-slate-300 font-bold text-center text-indigo-900 bg-indigo-50/50">
-                              {abiertos}
+                              {totalPlaces}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                      <tr>
+                        <td className="sticky left-0 bg-slate-100 p-3 border-t border-r border-slate-300 font-bold text-sm text-stone-700 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] bg-stone-50">
+                          🚫 Inasistencias
+                        </td>
+                        {activeDates.map(date => {
+                          const inasCount = (inasistenciasDb[date] || []).length;
+                          return (
+                            <td key={date} className={`p-3 border-t border-r border-slate-300 font-bold text-center ${inasCount > 0 ? 'text-stone-600 bg-stone-100' : 'text-slate-300 bg-white'}`}>
+                              {inasCount > 0 ? inasCount : '-'}
                             </td>
                           )
                         })}
@@ -2515,19 +2596,47 @@ export default function AsignacionesApp() {
                   {/* Separador */}
                   <div className="w-full h-px bg-gradient-to-r from-transparent via-stone-300 to-transparent my-8" />
 
-                  {/* Inasistencias */}
+                  {/* INASISTENCIAS (Bloque entre Pisos y Sin Asignar/Descansos) */}
+                  {(() => {
+                    const inasHoy = inasistenciasDb[menuDate] || [];
+                    if (inasHoy.length === 0) return null;
+                    const nameDict: Record<number, string> = {};
+                    allResidentsDb.forEach(r => nameDict[r.id] = r.name);
+                    return (
+                      <div className="mb-6">
+                        <div className="flex items-center gap-2 mb-3">
+                          <div className="w-2 h-8 rounded-full bg-stone-500" />
+                          <h2 className="text-lg font-black text-stone-700 tracking-tight">Inasistencias</h2>
+                          <span className="text-xs font-bold text-stone-400 ml-1">({inasHoy.length} residentes)</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                          {inasHoy.map((inas, i) => (
+                            <div key={i} className="bg-stone-100 border-2 border-stone-300 border-dashed rounded-xl px-3 py-2.5 flex items-center gap-2">
+                              <UserMinus className="w-3.5 h-3.5 text-stone-500" />
+                              <div className="flex flex-col">
+                                <span className="text-sm font-bold text-stone-600 line-through opacity-70">{nameDict[inas.id_agente] || `#${inas.id_agente}`}</span>
+                                <span className="text-[9px] font-bold text-stone-500 uppercase tracking-wider">{inas.motivo}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Sin Asignar */}
                   {sinAsignar.length > 0 && (
                     <div className="mb-6">
                       <div className="flex items-center gap-2 mb-3">
-                        <div className="w-2 h-8 rounded-full bg-rose-500" />
-                        <h2 className="text-lg font-black text-rose-800 tracking-tight">Sin Asignar</h2>
+                        <div className="w-2 h-8 rounded-full bg-amber-500" />
+                        <h2 className="text-lg font-black text-amber-800 tracking-tight">Sin Asignar</h2>
                         <span className="text-xs font-bold text-stone-400 ml-1">({sinAsignar.length} residentes)</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {sinAsignar.map(res => (
-                          <div key={res.id} className="bg-rose-50 border border-rose-200 rounded-xl px-3 py-2.5 flex items-center gap-2">
-                            <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
-                            <span className="text-sm font-bold text-rose-800">{res.name}</span>
+                          <div key={res.id} className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                            <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                            <span className="text-sm font-bold text-amber-800">{res.name}</span>
                           </div>
                         ))}
                       </div>
