@@ -37,9 +37,7 @@ archive/ai_docs/
 .ai_context/
 
 # Query exports and reports (may contain personal/schema data)
-query_supabase/*.xlsx
-query_supabase/*.csv
-query_supabase/*.txt
+query_supabase/
 
 # Ignorar carpetas pesadas
 data/
