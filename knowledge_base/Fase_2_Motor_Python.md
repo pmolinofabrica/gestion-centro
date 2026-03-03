@@ -1,80 +1,58 @@
-# Fase 2: El Cerebro - Motor de Asignación (Python)
+# Fase 2: El Cerebro - Motor de Asignación (Python v2.0)
 
-Esta fase documenta la lógica algorítmica del motor de asignación `motor_asignacion_apertura5.py`, el corazón de la distribución justa de residentes en dispositivos de mediación cultural.
+Esta fase documenta la lógica algorítmica del motor de asignación actualizado (`motor_asignaciones_supabase.py`), el corazón de la distribución de residentes en dispositivos.
 
-## 1. El Algoritmo de Asignación (3 Fases)
+## 1. El Algoritmo de Asignación (Secuencial Multi-criterio)
 
-El motor funciona como un optimizador greedy que opera en tres fases secuenciales por cada día del mes:
+El motor funciona como un optimizador greedy iterativo que procesa día por día, dispositivo por dispositivo, priorizando aquellos con **mayor escasez de personal capacitado**.
 
-### Fase 1: Cupo Mínimo
-Asigna residentes a todos los dispositivos abiertos hasta llegar al cupo mínimo de cada uno. Prioriza usando el Score.
+A diferencia de versiones anteriores, **no inventa cupos**. Lee estrictamente la base de datos:
+1. Extrae los cupos específicos guardados por el usuario en `calendario_dispositivos` para el mes entero.
+2. Si un dispositivo/día no tiene un registro explícito en `calendario_dispositivos`, el motor asume **cupo = 0** y no asigna a nadie allí (evita sobrescribir silenciosamente con valores predeterminados no deseados).
 
-### Fase 2: Cupo Máximo
-Con los residentes sobrantes, rellena dispositivos hasta su cupo máximo (ej: TARIMA DE PINTURA admite hasta 2).
+## 2. Constraints y Reglas de Negocio
 
-### Fase 3: Emergencia (Overbooking)
-Si aún quedan residentes sin asignar, los fuerza en dispositivos ya llenos con una penalización extra de `-200 × ocupación_actual`.
+El motor respeta rigurosamente 4 "Hard Constraints" (Reglas inquebrantables):
+* **Constraint A (Disponibilidad):** El agente debe estar convocado ese día (existir en la tabla `convocatoria` para la fecha/turno dada).
+* **Constraint B (Capacitación):** El agente debe tener una capacitación aprobada para el dispositivo objetivo con fecha igual o anterior al día de la asignación.
+* **Constraint C (Unicidad):** Un agente no puede ser asignado a más de un dispositivo el mismo día.
+* **Constraint D (Inasistencias):** **[NUEVO]** Si el agente figura en la tabla `inasistencias` para ese día específico, queda automáticamente descalificado (ignorado) en el proceso de asignación.
 
-Los residentes que ni siquiera en emergencia pueden ser ubicados (sin capacitación en ningún dispositivo abierto) se registran con dispositivo `-1` ("SIN CAPACITACIÓN").
+## 3. Fórmula de Scoring Multicriterio (Soft Constraints)
 
-## 2. Fórmula de Scoring (Exacta)
-
-```
-Score = 1000
-      - (repeticiones_en_este_dispositivo × 400)
-      - (total_días_trabajados_en_el_mes × 100)
-```
-
-| Penalización | Valor | Efecto |
-|---|---|---|
-| **Repetición de Dispositivo** | `-400` por vez | Fuerza rotación: si ya estuvo en BATIK 2 veces, pierde 800 pts para BATIK |
-| **Carga Laboral Global** | `-100` por día | Distribuye días: quien trabajó más días tiene Score más bajo globalmente |
-| **Saturación (solo Fase 3)** | `-200` por ocupante extra | Penaliza asignar a un dispositivo ya lleno |
-
-## 3. Heurística de Escasez (Innovación Clave)
-
-**Antes de asignar**, el motor **ordena los dispositivos** por "escasez de candidatos capacitados":
+Para decidir quién va a qué dispositivo de entre los candidatos aptos, el motor calcula un puntaje (Score) para cada candidato, seleccionando al que tenga el score más alto.
 
 ```python
-dispos_hoy = sorted(dispos_hoy_base, key=lambda d: contar_capacitados(d))
+Score = 1000
+      - (veces_asignado_a_ESTE_dispositivo_en_el_mes × 500)
+      - (total_días_asignados_globalmente_en_el_mes × 80)
+      + Random(0, 5) # Tie-breaker reproducible
 ```
 
-Los dispositivos con **menos gente capacitada eligen primero**, evitando que un dispositivo "difícil" se quede sin candidatos porque un dispositivo "fácil" los absorbió antes.
-
-## 4. Cupos Configurados (Hardcodeados)
-
-El motor tiene reglas de cupo diferenciadas por fecha:
-
-- **7 y 8 de marzo**: Dispositivos simples (Lectura, Río Juegos M/T, Autorretratate) a cupo 1; el resto a cupo 2.
-- **Resto del mes**: TARIMA y MESA DE PINTURA fijos en 2. BATIK, CONVIVENCIA, FÁBRICA DE PAPEL, MESA DE ENSAMBLE opcionales 1-2. Todos los demás en 1.
-
-> [!WARNING]
-> Estos cupos están hardcodeados en la función `obtener_cupos()`. Para meses futuros se necesita parametrizar o leer de `calendario_dispositivos`.
-
-## 5. Flujo de Ejecución Técnica
-
-1. **Extraer Capacitaciones**: Lee `vista_historial_capacitaciones` vía REST API (no SDK).
-2. **Extraer Convocatorias**: Lee `vista_convocatoria_completa` filtrando descansos (`id_turno = 20`).
-3. **Simular Capacitaciones Futuras**: Inyecta capacitaciones planificadas para el 10, 11 y 20 de marzo (hardcodeadas en `nuevos`).
-4. **Loop de Asignación**: Itera día × dispositivo (ordenado por escasez) × candidato (ordenado por Score).
-5. **Salida**: Genera `matriz_rotacion_completa.md` con la tabla Markdown de asignaciones.
-
-## 6. Script de Producción vs. Script de Planificación
-
-| Script | Uso | Invocado desde |
+| Factor | Peso | Objetivo Estratégico |
 |---|---|---|
-| `motor_asignacion_apertura5.py` | Genera la matriz Markdown de planificación | Manual (CLI) |
-| `motor_asignaciones_supabase.py` | Escribe directamente en la tabla `menu` de Supabase | `route.ts` (botón "Generar") |
+| **Base** | `1000` | Punto de partida constante. |
+| **Fatiga Local** | `-500` por repetición | Penalización ultra-severa para forzar la rotación. Si un residente ya estuvo en BATIK, es casi imposible que vuelva a ir si hay otro disponible. |
+| **Carga Global** | `-80` por día | Distribución equitativa. Quien trabajó menos días en el mes tiene prioridad sobre quien acumula más días trabajados. |
+| **Reproducibilidad** | `+0 a 5` | Desempate pseudo-aleatorio con semilla (`random.seed(dia-agente-dispositivo)`). Garantiza que correr el algoritmo 10 veces con los mismos datos genere **exactamente la misma salida**, mejorando el testing. |
 
-> [!IMPORTANT]
-> El frontend invoca `motor_asignaciones_supabase.py` (no la versión `apertura5`). Ambos deben mantener la misma lógica de scoring.
+> [!CAUTION]
+> **Crash de Postgres (`chk_orden`)**: El multicriterio puede generar puntajes negativos. Como el modelo de datos de `menu` requiere un campo `orden` numérico positivo, el motor inyecta `max(1, score)` antes de enviar a Supabase para prevenir una falla de integridad (Error 23514).
 
-## 7. Scripts de Mantenimiento
+## 4. Heurística de Escasez Diaria (Fase 1)
 
-| Script | Propósito |
-|---|---|
-| `undo_menu_marzo.py` | Borra asignaciones desde una fecha hacia adelante (antes de regenerar) |
-| `diagnostico_limpieza_ab.py` | Verifica consistencia de la división alfabética de grupos |
-| `check_descansos.py` | Valida que nadie esté asignado en su franco |
-| `fix_duplicates_2026.py` | Limpia registros duplicados de la tabla `menu` |
-| `fix_capacitacion_dates.py` | Corrige fechas de capacitación mal formateadas |
+Antes de realizar cruces, el motor evalúa cuántas personas capacitadas *y disponibles hoy* hay para cada dispositivo. 
+Luego, ordena los dispositivos de **menor a mayor cantidad de candidatos aptos**. 
+
+*Efecto:* Los dispositivos "difíciles" (ej: TELA COLECTIVA, que tiene pocos capacitados) eligen primero. Los dispositivos "fáciles" (ej: SECTOR DE LECTURA) eligen últimos, absorbiendo al excedente de personal.
+
+## 5. Lecciones Aprendidas de Datos (Bugs Históricos)
+
+### El Fallo de las 1000 filas de Supabase
+Supabase (PostgREST) implementa un límite estricto de seguridad de 1000 filas (paginación) para consultas sin filtrar. 
+En versiones previas, el motor ejecutaba `supabase.table("calendario_dispositivos").select("*").execute()`. Como la tabla pasó las 22.000 filas históricas, el API **truncaba silenciosamente** la respuesta, devolviendo registros del 2024. 
+El motor "creía" que el mes actual no tenía configuraciones de cupo, asignaba 0 residentes, y la UI visualizaba esto como si el motor hubiese borrado el `.length` de la matriz.
+**Solución:** Uso estricto de filtros temporales (`.gte("fecha", inicio).lte("fecha", fin)`) en todas las tablas transaccionales masivas antes del `.execute()`.
+
+### El Fallo del Fallback Cero
+Nunca permitir que la UI invente el valor `matriz.length` como sustituto visual de la base de datos si el motor no asigna. La UI y el Motor deben leer la misma fuente de verdad: lo que el humano haya guardado explícitamente en `calendario_dispositivos`.

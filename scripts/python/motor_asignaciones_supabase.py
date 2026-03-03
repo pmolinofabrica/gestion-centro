@@ -41,13 +41,17 @@ def fetch_data(mes_objetivo="03-2026", anio_cohorte=2026):
     dispo_data = {d["id_dispositivo"]: {"nombre": d["nombre_dispositivo"], "cupo": d.get("cupo_optimo", 1) or 1} for d in dispositivos}
     print(f"✅ Dispositivos operativos cargados: {len(dispositivos)}")
 
-    # NUEVO: Traer excepciones de cupos por dia (calendario_dispositivos)
-    res_calendario = supabase.table("calendario_dispositivos").select("id_dispositivo, fecha, cupo_habilitado").execute()
+    month, year = mes_objetivo.split("-")
+    fecha_inicio = f"{year}-{month}-01"
+    fecha_fin = f"{year}-{month}-31" 
+    
+    # NUEVO: Traer excepciones de cupos por dia (calendario_dispositivos) filtrando solo el mes objetivo
+    res_calendario = supabase.table("calendario_dispositivos").select("id_dispositivo, fecha, cupo_objetivo").gte("fecha", fecha_inicio).lte("fecha", fecha_fin).execute()
     cupos_por_fecha = {}
     for row in res_calendario.data:
         ft = row["fecha"]
         did = row["id_dispositivo"]
-        cupo_val = row["cupo_habilitado"]
+        cupo_val = row["cupo_objetivo"]
         if ft not in cupos_por_fecha:
             cupos_por_fecha[ft] = {}
         cupos_por_fecha[ft][did] = cupo_val
@@ -112,10 +116,6 @@ def fetch_data(mes_objetivo="03-2026", anio_cohorte=2026):
 
     # 4. Traer Convocatorias reales del Mes (cruzando planificacion -> dias)
     print("⏳ Procesando Convocatorias mensuales ...")
-    month, year = mes_objetivo.split("-")
-    fecha_inicio = f"{year}-{month}-01"
-    fecha_fin = f"{year}-{month}-31" 
-    
     # 4.a Mapear dia a id_dia
     res_dias = supabase.table("dias").select("id_dia, fecha").gte("fecha", fecha_inicio).lte("fecha", fecha_fin).execute()
     id_dia_to_fecha = {d["id_dia"]: d["fecha"] for d in res_dias.data}
@@ -160,7 +160,32 @@ def fetch_data(mes_objetivo="03-2026", anio_cohorte=2026):
         
     print(f"✅ Convocatorias del mes procesadas (Lectura DAMA): {len(res_convos.data)} turnos en total.")
 
-    return residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha
+    # 5. Traer Inasistencias del mes (Hard Constraint D)
+    res_inasistencias = supabase.table("inasistencias").select("id_agente, fecha_inasistencia").gte("fecha_inasistencia", fecha_inicio).lte("fecha_inasistencia", fecha_fin).execute()
+    inasistencias_por_dia = {}
+    for row in res_inasistencias.data:
+        dia_ina = row["fecha_inasistencia"]
+        if dia_ina not in inasistencias_por_dia:
+            inasistencias_por_dia[dia_ina] = set()
+        inasistencias_por_dia[dia_ina].add(row["id_agente"])
+    print(f"✅ Inasistencias del mes cargadas: {len(res_inasistencias.data)}")
+
+    # 6. Pre-cargar historial existente del mes desde Menu (para no partir de cero)
+    res_menu_previo = supabase.table("menu").select("id_agente, id_dispositivo, fecha_asignacion").gte("fecha_asignacion", fecha_inicio).lte("fecha_asignacion", fecha_fin).execute()
+    historial_previo = {}
+    carga_global_previa = {}
+    for row in res_menu_previo.data:
+        aid = row["id_agente"]
+        did = row["id_dispositivo"]
+        if did == 999:
+            continue  # No contar descanso como asignación
+        if aid not in historial_previo:
+            historial_previo[aid] = {}
+        historial_previo[aid][did] = historial_previo[aid].get(did, 0) + 1
+        carga_global_previa[aid] = carga_global_previa.get(aid, 0) + 1
+    print(f"✅ Historial previo del mes cargado: {len(res_menu_previo.data)} filas")
+
+    return residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha, inasistencias_por_dia, historial_previo, carga_global_previa
 
 
 if __name__ == "__main__":
@@ -171,17 +196,29 @@ import random
 # ALGORITMO CORE: ASIGNACIÓN AUTOMÁTICA
 # ==============================================================================
 
-def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_objetivo, dias_del_mes, cupos_por_fecha):
-    print("\n--- INICIANDO MOTOR DE ASIGNACIONES (PRODUCCIÓN) ---")
+def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_objetivo, dias_del_mes, cupos_por_fecha, inasistencias_por_dia, historial_previo, carga_global_previa):
+    print("\n--- INICIANDO MOTOR DE ASIGNACIONES v2.0 (PRODUCCIÓN) ---")
 
     # Helper auxiliar para obtener el cupo real de un dispositivo en un día
     def get_cupo(dispo_id, fecha_str):
         if fecha_str in cupos_por_fecha and dispo_id in cupos_por_fecha[fecha_str]:
             return cupos_por_fecha[fecha_str][dispo_id]
-        return dispo_data[dispo_id]["cupo"]
+        return 0  # No inventar cupos si el usuario no los definió explícitamente
     
-    # 2. Setup del Tracking Historico y Resultados
+    # 2. Setup del Tracking Historico y Resultados (con historial previo pre-cargado)
     historial_rotacion = {r["id_agente"]: {d: 0 for d in dispo_data.keys()} for r in residentes}
+    carga_global = {r["id_agente"]: 0 for r in residentes}
+    
+    # Pre-cargar historial y carga global desde datos existentes del mes
+    for aid, dispos in historial_previo.items():
+        if aid in historial_rotacion:
+            for did, count in dispos.items():
+                if did in historial_rotacion[aid]:
+                    historial_rotacion[aid][did] = count
+    for aid, count in carga_global_previa.items():
+        if aid in carga_global:
+            carga_global[aid] = count
+    
     grilla_resultados = {dia: {d: [] for d in dispo_data.keys()} for dia in dias_del_mes}
     
     # KPIs Log
@@ -208,8 +245,8 @@ def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocato
                     "score": len(aptos)  # Para priorizar dispositivos con más gente capacitada si empata
                 })
                 
-        # Ordenamos los dispositivos por mas gente capacitada
-        dispositivos_viables.sort(key=lambda x: x["score"], reverse=True)
+        # Ordenamos los dispositivos por ESCASEZ (menos gente capacitada primero = más urgentes)
+        dispositivos_viables.sort(key=lambda x: x["score"])
         dispositivos_viables = [x["id"] for x in dispositivos_viables]
                 
         demandas_del_dia = {did: 0 for did in dispo_data.keys()}
@@ -278,9 +315,16 @@ def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocato
                     if not is_capacitado_a_tiempo:
                         continue
                         
-                    # SOFT Constraint: Sistema de Puntajes
-                    pts = 1000 - (100 * historial_rotacion[agente_id][target_dispo_id])
-                    pts += random.randint(0, 5) # Tie-breaker
+                    # HARD Constraint D: NO asignar si tiene Inasistencia hoy
+                    if agente_id in inasistencias_por_dia.get(dia, set()):
+                        continue
+                        
+                    # SOFT Constraint: Sistema de Puntajes Multicriterio
+                    random.seed(f"{dia}-{agente_id}-{target_dispo_id}")  # Reproducible
+                    pts = 1000
+                    pts -= 500 * historial_rotacion[agente_id][target_dispo_id]  # Penalizar repetición en ESTE dispositivo
+                    pts -= 80 * carga_global.get(agente_id, 0)                   # Penalizar carga global
+                    pts += random.randint(0, 5)                                   # Tie-breaker reproducible
                     
                     candidatos_aptos.append({
                         "id": agente_id,
@@ -299,6 +343,7 @@ def execute_assignment_engine(residentes, dispo_data, caps_por_agente, convocato
                     asignados_hoy.add(ganador["id"])
                     grilla_resultados[dia][target_dispo_id].append({"id": ganador["id"], "score": ganador["score"]})
                     historial_rotacion[ganador["id"]][target_dispo_id] += 1
+                    carga_global[ganador["id"]] = carga_global.get(ganador["id"], 0) + 1
         
         # Guardamos cuantos P0 hubo
         estadistica_libres[dia] = len([r for r in residentes if r["id_agente"] not in asignados_hoy])
@@ -316,7 +361,7 @@ if __name__ == "__main__":
 
     mes_target = "03-2026"
     
-    residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha = fetch_data(mes_objetivo=mes_target, anio_cohorte=2026)
+    residentes, dispo_data, caps_por_agente, convocatorias_por_dia, cupos_por_fecha, inasistencias_por_dia, historial_previo, carga_global_previa = fetch_data(mes_objetivo=mes_target, anio_cohorte=2026)
     
     # Derivación dinámica DAMA de los días a procesar (Lo que haya bajado de Google Sheets)
     test_days = sorted(list(convocatorias_por_dia.keys()))
@@ -332,7 +377,7 @@ if __name__ == "__main__":
     print(f"\n✅ Días a procesar evaluados y filtrados: {test_days}")
     
     resultados, m_huecos, m_libres = execute_assignment_engine(
-        residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_target, test_days, cupos_por_fecha
+        residentes, dispo_data, caps_por_agente, convocatorias_por_dia, mes_target, test_days, cupos_por_fecha, inasistencias_por_dia, historial_previo, carga_global_previa
     )
     print("\n=== METRICAS DE ASIGNACIÓN ===\n")
     for d in test_days:
@@ -363,7 +408,7 @@ if __name__ == "__main__":
                         "id_agente": agente_id,
                         "fecha_asignacion": fecha_sql,
                         "estado_ejecucion": "planificado",
-                        "orden": score
+                        "orden": max(1, score)
                     })
                     
         # 2. Agentes Convocados pero NO Asignados (Descanso / Pool P0)

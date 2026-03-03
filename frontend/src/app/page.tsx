@@ -62,6 +62,7 @@ export default function AsignacionesApp() {
   const [convocadosCountDb, setConvocadosCountDb] = useState<Record<string, number>>({}); // { '07/03': 15 }
   const [isLoading, setIsLoading] = useState(true);
   const [activeDates, setActiveDates] = useState<string[]>([]); // Dynamic dates from DB
+  const [dateTurnoMap, setDateTurnoMap] = useState<Record<string, number>>({}); // { '07/03': 45 }
 
   // Selection states 
   const [selectedResident, setSelectedResident] = useState<{ id: number, name: string, score: number, device: string, date: string } | null>(null);
@@ -148,15 +149,23 @@ export default function AsignacionesApp() {
 
       // Revertir cada snapshot en paralelo
       const results = await Promise.all(
-        snaps.map(snap =>
-          supabase.from('menu')
-            .update({
-              id_dispositivo: snap.id_dispositivo,
-              estado_ejecucion: snap.estado_ejecucion,
-            })
-            .eq('id_agente', snap.id_agente)
-            .eq('fecha_asignacion', snap.fecha_asignacion)
-        )
+        snaps.map(snap => {
+          if (snap._isInsert) {
+            // Si el snapshot es de un INSERT (residente que no existía), borrarlo
+            return supabase.from('menu')
+              .delete()
+              .eq('id_agente', snap.id_agente)
+              .eq('fecha_asignacion', snap.fecha_asignacion);
+          } else {
+            return supabase.from('menu')
+              .update({
+                id_dispositivo: snap.id_dispositivo,
+                estado_ejecucion: snap.estado_ejecucion,
+              })
+              .eq('id_agente', snap.id_agente)
+              .eq('fecha_asignacion', snap.fecha_asignacion);
+          }
+        })
       );
 
       const anyError = results.find(r => r.error);
@@ -331,20 +340,148 @@ export default function AsignacionesApp() {
           setConvocadosCountDb(convocadosCount);
           setConvocadosDb(convocadosList);
 
-          // Llenar calendarDb dinámico con lo inyectado en Matrix
+          // Complementar convocados con datos de la tabla CONVOCATORIA
+          // (menu solo tiene datos para fechas ya procesadas por el motor)
+          try {
+            // Re-use planificacion data: fetch Apertura planificaciones de este mes
+            const [planiConv, turnosConv, diasConv] = await Promise.all([
+              supabase.from('planificacion').select('id_plani, id_dia, id_turno'),
+              supabase.from('turnos').select('id_turno, tipo_turno'),
+              supabase.from('dias').select('id_dia, fecha')
+            ]);
+
+            if (planiConv.data && turnosConv.data && diasConv.data) {
+              const tDict: Record<number, string> = {};
+              turnosConv.data.forEach((t: any) => { tDict[t.id_turno] = t.tipo_turno; });
+              const dMap: Record<number, string> = {};
+              diasConv.data.forEach((d: any) => { if (d.fecha) dMap[d.id_dia] = d.fecha.substring(0, 10); });
+
+              const yy = selectedMonth.split(" ")[1] || "2026";
+              const mNames: Record<string, string> = {
+                "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
+                "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
+                "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12"
+              };
+              const mFilt = mNames[selectedMonth.split(" ")[0]] || "03";
+
+              // Mapear id_plani → uiDate para planificaciones de Apertura del mes seleccionado
+              const planiToUiDate: Record<number, string> = {};
+              const aperturaPlaniIds: number[] = [];
+              planiConv.data.forEach((p: any) => {
+                const tipo = (tDict[p.id_turno] || '').toLowerCase();
+                if (!tipo.includes('apertura')) return;
+                const fecha = dMap[p.id_dia];
+                if (!fecha) return;
+                const [fy, fm, fd] = fecha.split('-');
+                if (fy !== yy || fm !== mFilt) return;
+                const uiDate = `${fd}/${fm}`;
+                planiToUiDate[p.id_plani] = uiDate;
+                aperturaPlaniIds.push(p.id_plani);
+              });
+
+              if (aperturaPlaniIds.length > 0) {
+                const { data: convData } = await supabase
+                  .from('convocatoria')
+                  .select('id_plani, id_agente')
+                  .eq('estado', 'vigente')
+                  .in('id_plani', aperturaPlaniIds);
+
+                if (convData) {
+                  convData.forEach((c: any) => {
+                    const uiDate = planiToUiDate[c.id_plani];
+                    if (!uiDate) return;
+                    if (!convocadosList[uiDate]) convocadosList[uiDate] = [];
+                    if (!convocadosList[uiDate].includes(c.id_agente)) {
+                      convocadosList[uiDate].push(c.id_agente);
+                      convocadosCount[uiDate] = (convocadosCount[uiDate] || 0) + 1;
+                    }
+                  });
+                  // Update states with merged data
+                  setConvocadosCountDb({ ...convocadosCount });
+                  setConvocadosDb({ ...convocadosList });
+                }
+              }
+            }
+          } catch (convErr) {
+            console.error("Error cargando convocatoria para convocados:", convErr);
+          }
+
+          // Llenar calendarDb con cupos reales de calendario_dispositivos (NO con .length de matrix)
           const newCalendarDb: Record<string, Record<string, number>> = {};
+          try {
+            const { data: calData } = await supabase.from('calendario_dispositivos').select('id_dispositivo, fecha, cupo_objetivo');
+            if (calData) {
+              calData.forEach((row: any) => {
+                if (!row.fecha) return;
+                const [fy, fm, fd] = row.fecha.substring(0, 10).split('-');
+                const uiDate = `${parseInt(fd)}/${parseInt(fm)}`;
+                if (!newCalendarDb[uiDate]) newCalendarDb[uiDate] = {};
+                newCalendarDb[uiDate][String(row.id_dispositivo)] = row.cupo_objetivo || 0;
+              });
+            }
+          } catch (calErr) {
+            console.error("Error cargando cupos de calendario_dispositivos:", calErr);
+          }
+          // Fallback: si una fecha+dispo del matrix no tiene cupo, usar el cupo_optimo (max) por defecto
           Object.keys(matrix).forEach(uid => {
-            newCalendarDb[uid] = {};
+            if (!newCalendarDb[uid]) newCalendarDb[uid] = {};
             Object.keys(matrix[uid]).forEach(did => {
-              newCalendarDb[uid][did] = matrix[uid][did].length;
+              if (newCalendarDb[uid][did] === undefined) {
+                newCalendarDb[uid][did] = matrix[uid][did].length;
+              }
             });
           });
           setCalendarDb(newCalendarDb);
 
           setAssignmentsDb(matrix);
 
-          // Compute sorted dynamic dates from matrix keys
-          const unsortedDates = Object.keys(matrix);
+          // Compute active dates from PLANIFICACION (source of truth) + matrix keys
+          const allActiveDates = new Set(Object.keys(matrix));
+
+          try {
+            const [planiRes, turnosRes, allDiasRes] = await Promise.all([
+              supabase.from('planificacion').select('id_dia, id_turno'),
+              supabase.from('turnos').select('id_turno, tipo_turno'),
+              supabase.from('dias').select('id_dia, fecha')
+            ]);
+
+            if (planiRes.data && turnosRes.data && allDiasRes.data) {
+              const turnoDict: Record<number, string> = {};
+              turnosRes.data.forEach((t: any) => { turnoDict[t.id_turno] = t.tipo_turno; });
+
+              const dDict: Record<number, string> = {};
+              allDiasRes.data.forEach((d: any) => { if (d.fecha) dDict[d.id_dia] = d.fecha.substring(0, 10); });
+
+              const yFilt = selectedMonth.split(" ")[1] || "2026";
+              const monthNames: Record<string, string> = {
+                "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
+                "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
+                "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12"
+              };
+              const mmFilt = monthNames[selectedMonth.split(" ")[0]] || "03";
+
+              const turnoPerDate: Record<string, number> = {};
+
+              planiRes.data.forEach((p: any) => {
+                const tipo = (turnoDict[p.id_turno] || '').toLowerCase();
+                // Solo incluir turnos de Apertura al público (para Marzo es el único relevante)
+                if (!tipo.includes('apertura')) return;
+                const fecha = dDict[p.id_dia];
+                if (!fecha) return;
+                const [fy, fm, fd] = fecha.split('-');
+                if (fy !== yFilt || fm !== mmFilt) return;
+                const uiDate = `${fd}/${fm}`;
+                allActiveDates.add(uiDate);
+                turnoPerDate[uiDate] = p.id_turno;
+              });
+
+              setDateTurnoMap(turnoPerDate);
+            }
+          } catch (planErr) {
+            console.error("Error cargando planificacion para fechas activas:", planErr);
+          }
+
+          const unsortedDates = Array.from(allActiveDates);
           const sorted = unsortedDates.sort((a, b) => {
             const [dayA, monthA] = a.split("/").map(Number);
             const [dayB, monthB] = b.split("/").map(Number);
@@ -595,8 +732,8 @@ export default function AsignacionesApp() {
 
           if (e4) { alert("Error Paso 4b: " + e4.message); setIsLoading(false); return; }
 
-          // Solo guardamos snapshot del original (el nuevo no existía, no se puede revertir)
-          pushUndo({ snapshot: snapOriginal });
+          // Guardamos snapshot compuesto: el original + marca para BORRAR el nuevo (fue un INSERT)
+          pushUndo({ snapshots: [snapOriginal, { id_agente: newRes.id_agente, fecha_asignacion: fechaDB, _isInsert: true }] });
         }
 
         setSelectedResident(null);
@@ -703,10 +840,18 @@ export default function AsignacionesApp() {
       setIsLoading(true);
 
       if (updateCupo) {
-        await supabase.from('calendario_dispositivos').upsert({
+        // Borrar registro existente y reinsertar (constraint incluye id_turno)
+        await supabase.from('calendario_dispositivos').delete()
+          .eq('id_dispositivo', parseInt(deviceId))
+          .eq('fecha', fechaDB);
+        // Obtener id_turno de la fecha correspondiente
+        const uiDateForTurno = selectedVacant?.date || '';
+        const turnoId = dateTurnoMap[uiDateForTurno] || 1; // fallback al turno principal (1)
+        await supabase.from('calendario_dispositivos').insert({
           id_dispositivo: parseInt(deviceId),
           fecha: fechaDB,
-          cupo_habilitado: currentAssigned + 1
+          id_turno: turnoId,
+          cupo_objetivo: currentAssigned + 1
         });
       }
 
@@ -753,18 +898,26 @@ export default function AsignacionesApp() {
 
       Object.entries(calendarDb).forEach(([strDate, deviceMap]) => {
         const [d, mStr] = strDate.split("/");
-        const fechaDB = `${yyyy}-${mStr}-${d}`;
+        const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        const turnoId = dateTurnoMap[strDate] || 1;
         Object.entries(deviceMap).forEach(([devId, cupo]) => {
           payload.push({
             id_dispositivo: Number(devId),
             fecha: fechaDB,
-            cupo_habilitado: cupo
+            id_turno: turnoId,
+            cupo_objetivo: cupo
           });
         });
       });
 
       if (payload.length > 0) {
-        const { error } = await supabase.from('calendario_dispositivos').upsert(payload, { onConflict: 'id_dispositivo, fecha' });
+        // No podemos usar upsert porque la constraint incluye id_turno que el frontend no maneja.
+        // Estrategia: borrar los registros existentes para estas fechas/dispositivos y reinsertar.
+        const fechasUnicas = [...new Set(payload.map((p: any) => p.fecha))];
+        for (const f of fechasUnicas) {
+          await supabase.from('calendario_dispositivos').delete().eq('fecha', f);
+        }
+        const { error } = await supabase.from('calendario_dispositivos').insert(payload);
         if (error) throw error;
         alert("Matriz de Dispositivos guardada con éxito.");
       } else {
@@ -1568,6 +1721,7 @@ export default function AsignacionesApp() {
                             const currentLocation = occupancies[res.id];
 
                             const alt = {
+                              id: res.id,
                               name: res.name,
                               isBusy: !!currentLocation,
                               reason: isConvocado ? (currentLocation ? `Ocupado en: ${currentLocation}` : "Libre hoy") : "Descanso"
@@ -1590,14 +1744,15 @@ export default function AsignacionesApp() {
                                 </span>
                                 <div className="space-y-2">
                                   {tier1.map((alt, i) => (
-                                    <div key={i} className={`w-full text-left p-3 rounded-lg border-2 flex justify-between items-center group
-                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-75' : 'border-emerald-200 bg-emerald-50'}`}>
+                                    <button key={i} className={`w-full text-left p-3 rounded-lg border-2 flex justify-between items-center group transition-colors
+                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-75 cursor-not-allowed' : 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100 cursor-pointer'}`}
+                                      onClick={() => { if (!alt.isBusy) { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); } }}>
                                       <div>
                                         <div className={`font-bold text-sm ${alt.isBusy ? 'text-slate-600' : 'text-emerald-900'}`}>{alt.name}</div>
                                         <div className={`text-[10px] font-medium mt-0.5 ${alt.isBusy ? 'text-rose-500' : 'text-emerald-700'}`}>{alt.reason}</div>
                                       </div>
                                       {alt.isBusy && <span className="text-xs bg-rose-100 text-rose-700 p-1 px-2 rounded-md border border-rose-200 shadow-sm">Bloqueado 🔒</span>}
-                                    </div>
+                                    </button>
                                   ))}
                                 </div>
                               </div>}
@@ -1609,14 +1764,15 @@ export default function AsignacionesApp() {
                                 </span>
                                 <div className="space-y-1.5 opacity-90">
                                   {tier2.map((alt, i) => (
-                                    <div key={i} className={`w-full text-left p-2.5 rounded-md border flex justify-between items-center group
-                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-70' : 'border-amber-200 bg-amber-50'}`}>
+                                    <button key={i} className={`w-full text-left p-2.5 rounded-md border flex justify-between items-center group transition-colors
+                                      ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-70 cursor-not-allowed' : 'border-amber-200 bg-amber-50 hover:bg-amber-100 cursor-pointer'}`}
+                                      onClick={() => { if (!alt.isBusy) { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); } }}>
                                       <div>
                                         <div className={`font-semibold text-xs ${alt.isBusy ? 'text-slate-500' : 'text-amber-900'}`}>{alt.name}</div>
                                         <div className={`text-[9px] leading-tight mt-0.5 ${alt.isBusy ? 'text-rose-400 font-bold' : 'text-amber-700'}`}>{alt.reason}</div>
                                       </div>
                                       {alt.isBusy && <span className="text-[10px] bg-rose-50 text-rose-600 p-0.5 px-1.5 rounded border border-rose-100">🔒</span>}
-                                    </div>
+                                    </button>
                                   ))}
                                 </div>
                               </div>}
@@ -1628,11 +1784,12 @@ export default function AsignacionesApp() {
                                 </span>
                                 <div className="space-y-1 opacity-75">
                                   {tier3.map((alt, i) => (
-                                    <div key={i} className="w-full text-left p-2 rounded border border-rose-200 bg-white flex justify-between items-center">
+                                    <button key={i} className="w-full text-left p-2 rounded border border-rose-200 bg-white hover:bg-rose-50 cursor-pointer flex justify-between items-center transition-colors"
+                                      onClick={() => { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); }}>
                                       <div>
                                         <div className="font-medium text-[11px] text-rose-800">{alt.name} <span className="text-[9px] text-rose-500 ml-1">({alt.reason})</span></div>
                                       </div>
-                                    </div>
+                                    </button>
                                   ))}
                                 </div>
                               </div>}
@@ -1644,9 +1801,10 @@ export default function AsignacionesApp() {
                                 </span>
                                 <div className="space-y-1 opacity-50">
                                   {tier4.map((alt, i) => (
-                                    <div key={i} className="w-full text-left p-1.5 rounded border border-slate-200 bg-white flex justify-between items-center">
+                                    <button key={i} className="w-full text-left p-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer flex justify-between items-center transition-colors"
+                                      onClick={() => { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); }}>
                                       <div className="font-medium text-[10px] text-slate-600">{alt.name}</div>
-                                    </div>
+                                    </button>
                                   ))}
                                 </div>
                               </div>}

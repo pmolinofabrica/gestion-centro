@@ -95,3 +95,20 @@ Esta nota documenta los errores encontrados y sus soluciones durante el desarrol
 ## 🔴 Bug: Error 'Failed to fetch' al intercambiar residentes o mutar datos rápidamente
 **Síntoma**: Al hacer doble click o click rápido en mutaciones (reemplazar, quitar, asignar) en el frontend, arrojaba 'Failed to fetch' en `Paso 4a`. Esto era un falso negativo: la DB guardaba el registro real, pero el navegador abortaba la conexión porque los componentes React hacían un unmount / `window.location.reload()` mientras el `fetch` o la Query a Supabase seguía en vuelo.
 **Solución**: Se agregaron guardias `if (isLoading) return;` a todas las mutaciones asíncronas para rechazar clicks duplicados mientras hay una transacción en progreso.
+
+---
+
+## 🔴 Error Crítico: La Ilusión Óptica de la "Matriz Borrada" (El Bug de los 3 Pasos)
+
+**Síntoma:** Al presionar "Generar" la Matriz de Dispositivos desaparecía visualmente y se ponía en `0`. Si el usuario apretaba Guardar, se borraba permanentemente de la Base de Datos. Parecía que el motor estaba reseteando intencionalmente los cupos configurados.
+  
+**Causa Raíz Múltiple:** Esto fue causado por 3 sistemas fallando en cadena:
+
+1. **La Truncación de Supabase (Límite 1000):** La tabla `calendario_dispositivos` superaba las 22.000 filas históricas. El `motor_asignaciones_supabase.py` ejecutaba `.select()` SIN un filtro de fecha (`.gte(...)`). Supabase, por seguridad, devolvía las primeras 1000 filas (casi todas del año 2024). El motor interpretó que en Marzo 2026 no había cupos parametrizados, así que **asignó a 0 personas**.
+2. **Crash de Postgres (`chk_orden`):** Al asignar a nadie o asignar mal, el sistema de Puntaje (Multicriterio) calculó puntajes negativos (`-55`). Al tratar de guardar esos puntajes en el campo `orden` de la tabla `menu` (donde está definida la restricción `chk_orden` positiva), **Postgres rebotó la inserción y crasheó el script de Python**. El motor falló en silencio y dejó la tabla `menu` vacía (ya que el script `undo` previo a su corrida la había vaciado exitosamente).
+3. **El Fallback Destructivo del Frontend:** La página recargó (`window.location.reload()`). Al leer la tabla `menu` y ver que el motor no asignó a nadie (0 asignados en total), intentó armar `calendarDb`. Como no encontró fechas parametrizadas en la memoria (por desajustes de formato `1/3` vs `01/03`), el frontend usó su código de *fallback*: `matriz.length`. Inyectó cientos de `0` en la pantalla. Y al hacer click en "Guardar", la interfaz finalmente *sí impactó* esos `0` destructivos a `calendario_dispositivos`.
+
+**Solución 3-en-1:**
+1. Motor: Agregar `.gte("fecha", inicio).lte("fecha", fin)` en **todas** las extracciones masivas para eludir el techo de 1000 filas que impone PostgREST.
+2. Motor: Aplicar `.max(1, score)` al subir el puntaje al campo `orden` en Postgres para prevenir faltas al constraint.
+3. Frontend: **JAMÁS** inventar sustitutos (como iterar el tamaño de gente asignada o `cupo_optimo`) si la UI no recibe la matrix del DB. Si no hay nada de DB, mostrar estrictamente lo que hay (0). Arreglado parsing a `.padStart(2, '0')` para compatibilidad de UUID de fechas.
