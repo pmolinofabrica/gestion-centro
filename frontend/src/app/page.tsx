@@ -51,6 +51,7 @@ const CALL_STATUS_DB = {
 export default function AsignacionesApp() {
   const [activeTab, setActiveTab] = useState<string>('plan'); // 'plan', 'exec', 'devices', 'menu'
   const [selectedMonth, setSelectedMonth] = useState("Marzo 2026");
+  const [selectedShift, setSelectedShift] = useState("Apertura al Público");
 
   // DB States
   const [dbDevices, setDbDevices] = useState<{ id: string, name: string, min: number, max: number }[]>(MOCK_DEVICES_BACKUP);
@@ -291,10 +292,25 @@ export default function AsignacionesApp() {
           setAllResidentsDb(Object.values(residentsMap));
         }
 
+        // Configurar los límites del mes actual para traer data justa
+        const smParts = (selectedMonth || "Marzo 2026").split(" ");
+        const yFilt = smParts[1] || "2026";
+        const monthNames: Record<string, string> = {
+          "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
+          "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
+          "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12"
+        };
+        const mmFilt = monthNames[smParts[0]] || "03";
+        const startOfMonth = `${yFilt}-${mmFilt}-01`;
+        const lastDay = new Date(Number(yFilt), Number(mmFilt), 0).getDate();
+        const endOfMonth = `${yFilt}-${mmFilt}-${lastDay}`;
+
         // Fetch Asignaciones para construir la Matriz (DAMA Menu Table)
         const { data: menuData, error: menuErr } = await supabase
           .from('menu')
-          .select('id_agente, id_dispositivo, fecha_asignacion, estado_ejecucion, orden');
+          .select('id_agente, id_dispositivo, fecha_asignacion, estado_ejecucion, orden')
+          .gte('fecha_asignacion', startOfMonth)
+          .lte('fecha_asignacion', endOfMonth);
         // Ya no filtramos por "planificado" para poder traernos tambien a los "descanso" y contarlos.
 
         if (menuData && resiData) {
@@ -313,6 +329,10 @@ export default function AsignacionesApp() {
             const dateParts = a.fecha_asignacion.split("-");
             if (dateParts.length === 3) {
               const [y, m, d] = dateParts;
+
+              // Evitar volcar TODO en la memoria UI si no corresponde al mes seleccionado
+              if (y !== yFilt || m !== mmFilt) return;
+
               const uiDate = `${d}/${m}`;
 
               // DEDUPLICAR: un agente puede tener múltiples filas por bugs previos.
@@ -370,7 +390,12 @@ export default function AsignacionesApp() {
               const aperturaPlaniIds: number[] = [];
               planiConv.data.forEach((p: any) => {
                 const tipo = (tDict[p.id_turno] || '').toLowerCase();
-                if (!tipo.includes('apertura')) return;
+
+                // Filtro dinámico basado en selectedShift
+                if (selectedShift === "Apertura al Público" && !tipo.includes('apertura')) return;
+                if (selectedShift === "Turno Mañana" && !tipo.includes('mañana')) return;
+                if (selectedShift === "Turno Tarde" && !tipo.includes('tarde')) return;
+
                 const fecha = dMap[p.id_dia];
                 if (!fecha) return;
                 const [fy, fm, fd] = fecha.split('-');
@@ -409,13 +434,35 @@ export default function AsignacionesApp() {
 
           // Llenar calendarDb con cupos reales de calendario_dispositivos (NO con .length de matrix)
           const newCalendarDb: Record<string, Record<string, number>> = {};
+
           try {
-            const { data: calData } = await supabase.from('calendario_dispositivos').select('id_dispositivo, fecha, cupo_objetivo');
+            const startOfMonth = `${yFilt}-${mmFilt}-01`;
+            const lastDay = new Date(Number(yFilt), Number(mmFilt), 0).getDate();
+            const endOfMonth = `${yFilt}-${mmFilt}-${lastDay}`;
+
+            const { data: calData } = await supabase.from('calendario_dispositivos')
+              .select('id_dispositivo, fecha, cupo_objetivo, id_turno')
+              .gte('fecha', startOfMonth)
+              .lte('fecha', endOfMonth);
+            const { data: turnosCal } = await supabase.from('turnos').select('id_turno, tipo_turno');
+
+            const calTurnoDict: Record<number, string> = {};
+            if (turnosCal) {
+              turnosCal.forEach((t: any) => { calTurnoDict[t.id_turno] = t.tipo_turno; });
+            }
+
             if (calData) {
               calData.forEach((row: any) => {
                 if (!row.fecha) return;
+
+                // Filtro dinámico basado en selectedShift
+                const tipo = (calTurnoDict[row.id_turno] || '').toLowerCase();
+                if (selectedShift === "Apertura al Público" && !tipo.includes('apertura')) return;
+                if (selectedShift === "Turno Mañana" && !tipo.includes('mañana')) return;
+                if (selectedShift === "Turno Tarde" && !tipo.includes('tarde')) return;
+
                 const [fy, fm, fd] = row.fecha.substring(0, 10).split('-');
-                const uiDate = `${parseInt(fd)}/${parseInt(fm)}`;
+                const uiDate = `${fd}/${fm}`;
                 if (!newCalendarDb[uiDate]) newCalendarDb[uiDate] = {};
                 newCalendarDb[uiDate][String(row.id_dispositivo)] = row.cupo_objetivo || 0;
               });
@@ -434,10 +481,9 @@ export default function AsignacionesApp() {
           });
           setCalendarDb(newCalendarDb);
 
-          setAssignmentsDb(matrix);
-
-          // Compute active dates from PLANIFICACION (source of truth) + matrix keys
-          const allActiveDates = new Set(Object.keys(matrix));
+          // Compute active dates from PLANIFICACION (source of truth)
+          // Empezamos vacío: se llenará SÓLO con las fechas que aprueben el filtro de Turno.
+          const allActiveDates = new Set<string>();
 
           try {
             const [planiRes, turnosRes, allDiasRes] = await Promise.all([
@@ -453,20 +499,16 @@ export default function AsignacionesApp() {
               const dDict: Record<number, string> = {};
               allDiasRes.data.forEach((d: any) => { if (d.fecha) dDict[d.id_dia] = d.fecha.substring(0, 10); });
 
-              const yFilt = selectedMonth.split(" ")[1] || "2026";
-              const monthNames: Record<string, string> = {
-                "Enero": "01", "Febrero": "02", "Marzo": "03", "Abril": "04",
-                "Mayo": "05", "Junio": "06", "Julio": "07", "Agosto": "08",
-                "Septiembre": "09", "Octubre": "10", "Noviembre": "11", "Diciembre": "12"
-              };
-              const mmFilt = monthNames[selectedMonth.split(" ")[0]] || "03";
-
               const turnoPerDate: Record<string, number> = {};
 
               planiRes.data.forEach((p: any) => {
                 const tipo = (turnoDict[p.id_turno] || '').toLowerCase();
-                // Solo incluir turnos de Apertura al público (para Marzo es el único relevante)
-                if (!tipo.includes('apertura')) return;
+
+                // Filtro dinámico basado en selectedShift
+                if (selectedShift === "Apertura al Público" && !tipo.includes('apertura')) return;
+                if (selectedShift === "Turno Mañana" && !tipo.includes('mañana')) return;
+                if (selectedShift === "Turno Tarde" && !tipo.includes('tarde')) return;
+
                 const fecha = dDict[p.id_dia];
                 if (!fecha) return;
                 const [fy, fm, fd] = fecha.split('-');
@@ -481,6 +523,17 @@ export default function AsignacionesApp() {
           } catch (planErr) {
             console.error("Error cargando planificacion para fechas activas:", planErr);
           }
+
+          // APLICAR FILTRO A LA MATRIX: Borrar todas las fechas de la matrix que
+          // no estén avaladas por allActiveDates (el cual fue filtrado por el Turno)
+          const validDatesObj = Array.from(allActiveDates);
+          Object.keys(matrix).forEach(uid => {
+            if (!validDatesObj.includes(uid)) {
+              delete matrix[uid];
+            }
+          });
+
+          setAssignmentsDb(matrix);
 
           const unsortedDates = Array.from(allActiveDates);
           const sorted = unsortedDates.sort((a, b) => {
@@ -531,7 +584,7 @@ export default function AsignacionesApp() {
     }
 
     loadInitialData();
-  }, []);
+  }, [selectedMonth, selectedShift]);
 
   // States for Execution Tab
   const [execDate, setExecDate] = useState("07/03");
@@ -875,13 +928,16 @@ export default function AsignacionesApp() {
       setIsLoading(true);
 
       if (updateCupo) {
-        // Borrar registro existente y reinsertar (constraint incluye id_turno)
-        await supabase.from('calendario_dispositivos').delete()
-          .eq('id_dispositivo', parseInt(deviceId))
-          .eq('fecha', fechaDB);
         // Obtener id_turno de la fecha correspondiente
         const uiDateForTurno = selectedVacant?.date || '';
         const turnoId = dateTurnoMap[uiDateForTurno] || 1; // fallback al turno principal (1)
+
+        // Borrar registro existente y reinsertar (constraint incluye id_turno)
+        await supabase.from('calendario_dispositivos').delete()
+          .eq('id_dispositivo', parseInt(deviceId))
+          .eq('fecha', fechaDB)
+          .eq('id_turno', turnoId);
+
         await supabase.from('calendario_dispositivos').insert({
           id_dispositivo: parseInt(deviceId),
           fecha: fechaDB,
@@ -946,12 +1002,24 @@ export default function AsignacionesApp() {
       });
 
       if (payload.length > 0) {
-        // No podemos usar upsert porque la constraint incluye id_turno que el frontend no maneja.
-        // Estrategia: borrar los registros existentes para estas fechas/dispositivos y reinsertar.
-        const fechasUnicas = [...new Set(payload.map((p: any) => p.fecha))];
-        for (const f of fechasUnicas) {
-          await supabase.from('calendario_dispositivos').delete().eq('fecha', f);
+        // No podemos usar upsert porque la constraint incluye id_turno que el frontend no maneja nativamente como PK.
+        // Estrategia: agrupar por fecha y turnos para borrar sólo los de la vista actual.
+        const deleteMapping: Record<string, number[]> = {};
+        payload.forEach((p: any) => {
+          if (!deleteMapping[p.fecha]) deleteMapping[p.fecha] = [];
+          if (!deleteMapping[p.fecha].includes(p.id_turno)) {
+            deleteMapping[p.fecha].push(p.id_turno);
+          }
+        });
+
+        for (const f of Object.keys(deleteMapping)) {
+          const turnosAfectados = deleteMapping[f];
+          await supabase.from('calendario_dispositivos')
+            .delete()
+            .eq('fecha', f)
+            .in('id_turno', turnosAfectados);
         }
+
         const { error } = await supabase.from('calendario_dispositivos').insert(payload);
         if (error) throw error;
         alert("Matriz de Dispositivos guardada con éxito.");
@@ -1381,13 +1449,24 @@ export default function AsignacionesApp() {
               <div>
                 <div className="flex items-center gap-3">
                   <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-tight">Asignaciones</h1>
-                  <select
-                    className="bg-slate-100 border border-slate-200 rounded-md px-2 py-0.5 text-xs font-bold text-slate-700 outline-none hover:bg-slate-200 cursor-pointer"
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(e.target.value)}
-                  >
-                    {MOCK_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
+                  <div className="flex flex-col gap-1 ml-4">
+                    <select
+                      className="bg-slate-100 border border-slate-200 rounded-md px-2 py-0.5 text-xs font-bold text-slate-700 outline-none hover:bg-slate-200 cursor-pointer"
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                    >
+                      {MOCK_MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select
+                      className="bg-slate-100 border border-slate-200 rounded-md px-2 py-0.5 text-xs font-bold text-slate-700 outline-none hover:bg-slate-200 cursor-pointer"
+                      value={selectedShift}
+                      onChange={(e) => setSelectedShift(e.target.value)}
+                    >
+                      <option value="Apertura al Público">Apertura al Público</option>
+                      <option value="Turno Mañana">Turno Mañana</option>
+                      <option value="Turno Tarde">Turno Tarde</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2539,8 +2618,14 @@ export default function AsignacionesApp() {
                       </div>
                       <div className="flex-1 w-full">
                         <label className="block text-[10px] uppercase tracking-wider font-bold text-stone-500 mb-1.5">Tipo de Turno</label>
-                        <select className="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm font-bold text-stone-800 focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all">
-                          <option>Apertura al Público</option>
+                        <select
+                          className="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm font-bold text-stone-800 focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all"
+                          value={selectedShift}
+                          onChange={(e) => setSelectedShift(e.target.value)}
+                        >
+                          <option value="Apertura al Público">Apertura al Público</option>
+                          <option value="Turno Mañana">Turno Mañana</option>
+                          <option value="Turno Tarde">Turno Tarde</option>
                         </select>
                       </div>
                       <div className="flex flex-col items-center pt-4">

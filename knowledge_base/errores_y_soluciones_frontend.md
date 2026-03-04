@@ -112,3 +112,50 @@ Esta nota documenta los errores encontrados y sus soluciones durante el desarrol
 1. Motor: Agregar `.gte("fecha", inicio).lte("fecha", fin)` en **todas** las extracciones masivas para eludir el techo de 1000 filas que impone PostgREST.
 2. Motor: Aplicar `.max(1, score)` al subir el puntaje al campo `orden` en Postgres para prevenir faltas al constraint.
 3. Frontend: **JAMÁS** inventar sustitutos (como iterar el tamaño de gente asignada o `cupo_optimo`) si la UI no recibe la matrix del DB. Si no hay nada de DB, mostrar estrictamente lo que hay (0). Arreglado parsing a `.padStart(2, '0')` para compatibilidad de UUID de fechas.
+
+---
+
+## 🔴 Error Crítico: Los filtros de Turno y Mes no actualizaban la UI
+
+**Síntoma:** Al cambiar el filtro de "Mes" o "Turno" en el Header, la tabla `Matriz de Dispositivos` no se refrescaba, y al guardar se perdían los datos del Turno anterior (o se sobreescribían con ceros).
+
+**Causa Raíz:**
+1. El `useEffect` principal en `page.tsx` no tenía `selectedMonth` y `selectedShift` en su array de dependencias, por lo que React no re-ejecutaba el fetch al cambiar los selectores.
+2. Al guardar la matriz (`handleSaveMatrixDevices`), la query de eliminación pre-inserción `.delete().eq('fecha', x)` borraba TODOS los turnos de ese día sin importar en qué turno visual estaba el usuario.
+3. El formato de las fechas en la UI no emparejaba (`07/03` vs `7/3`) debido a `parseInt()` que quitaba los ceros a la izquierda, rompiendo la búsqueda en diccionarios y asumiendo silenciosamente el `Turno 1` (Apertura al Público) por defecto para todo.
+
+**Solución:**
+- Reestructurar dependencias del `useEffect()`.
+- Modificar lógicas de eliminación en BD para que siempre utilicen `.eq('id_turno', activeTurno)`.
+- Eliminar los `parseInt()` destructivos para mantener la integridad de strings indexados con cero a la izquierda (`07/03`).
+
+---
+
+## 🔴 Error Crítico: Fetch del Frontend limitaba silenciosamente matrices grandes a 1000 filas (Supabase Pagination)
+
+**Síntoma:** Aunque la función Guardar enviaba exitosamente los nuevos cupos a la base de datos (se comprobó vía Python backend request que los datos estaban ahí), al recargar la página la interfaz seguía mostrando la matriz en `0`, como si el guardado hubiera sido ignorado.
+
+**Causa Raíz:**
+Supabase/PostgREST tiene un límite estricto de seguridad que retorna un máximo de **1000 filas** por fetch si no se proveen límites. Como `calendario_dispositivos` superó los 1000 registros históricos, el fetch `select('*')` del frontend se cortaba antes de descargar los meses actuales (que estaban en la fila 1001 en adelante). 
+
+**Solución:**
+Se reescribió la llamada a Supabase en el frontend para solicitar específicamente el slice de fechas activas, previniendo el desbordamiento de paginación de la API:
+```javascript
+.gte('fecha', startOfMonth)
+.lte('fecha', endOfMonth)
+```
+Esto mismo se aplicó proactivamente a la solicitud de la tabla `menu` (Asignaciones).
+
+---
+
+## 🔴 Error Crítico: Fallo Total de DB por parsing de fechas incompatibles en Javascript (`undefined` stringing & Días fuera de rango)
+
+**Síntoma:** Tras optimizar los fetches con fronteras de fechas (`.lte` y `.gte`), la interfaz completa crasheaba con el error `Error cargando tabla menu: {}` que vaciaba la aplicación.
+
+**Causas Raíz:**
+1. **Carrera de Hidratación en React:** En el primer milisegundo de ejecución (antes de que el `useState` inyecte "Marzo 2026"), la variable podía ser un objeto vacío o malformado. El parser JS `.split(" ")[1]` de un `undefined` fallaba y generaba **literalmente el string** `"undefined"`. Esto enviaba a Postgres un rango como `undefined-undefined-01`, que respondía con un Error 400 Bad Request.
+2. **Postgres Out-of-Range Date Validation:** El límite de fin de mes estaba "hardcodeado" a `-31`. Al visualizar meses como Abril o Junio, la UI mandaba `2026-04-31`. PostgreSQL evaluaba "31 de Abril" como matemáticamente imposible, lanzando error 400 silenciando la carga entera de datos de ese mes.
+
+**Solución:**
+- Blindar las variables JS del `split` con fallback operator robusto `(selectedMonth || "Marzo 2026").split(" ")`.
+- Reemplazar el `31` hardcodeado por el constructor nativo de fechas de JS que sabe matemáticamente cuántos días tiene cualquier mes (contemplando años bisiestos): `new Date(year, month, 0).getDate()`.

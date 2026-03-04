@@ -40,6 +40,7 @@ function onOpen() {
   // Dashboard y Reportes
   rrhhMenu.addItem('📊 Ver Tablero de Control', 'loadSeguimientoResidentes');
   rrhhMenu.addItem('⚖️ Ver Saldos de Horas', 'downloadSaldosResumen');
+  rrhhMenu.addItem('📥 Descargar Grupos de Escuelas (Jue y Vie)', 'downloadGruposEscuelas');
   rrhhMenu.addSeparator();
   
   // Datos Personales

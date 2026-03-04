@@ -259,3 +259,57 @@ function downloadSaldos() {
   
   SpreadsheetApp.getUi().alert('✅ ' + rows.length + ' saldos descargados');
 }
+
+// ============================================================================
+// MÓDULO: DESCARGA DE MATRIZ DE ESCUELAS (Mañana/Tarde Jueves y Viernes)
+// ============================================================================
+function downloadGruposEscuelas() {
+  // Consultamos usando fetchAll para que maneje la paginación garantizada
+  const data = fetchAll('agentes_grupos_dias', 'dia_semana,grupo,id_agente,datos_personales(nombre,apellido)');
+  
+  if (!data || data.length === 0) {
+    SpreadsheetApp.getUi().alert('⚠️ No hay grupos de escuelas registrados en la base de datos.');
+    return;
+  }
+  
+  // Ordenar en memoria (JS): Primero por día, luego por Apellido
+  data.sort((a, b) => {
+    if (a.dia_semana !== b.dia_semana) return a.dia_semana - b.dia_semana;
+    const apeA = (a.datos_personales && a.datos_personales.apellido) ? a.datos_personales.apellido.toLowerCase() : '';
+    const apeB = (b.datos_personales && b.datos_personales.apellido) ? b.datos_personales.apellido.toLowerCase() : '';
+    return apeA.localeCompare(apeB);
+  });
+  
+  const sheet = getOrCreateSheet_('GRUPOS ESCUELAS');
+  const headers = ['Residente', 'Día', 'Tipo de Turno (Escuela)'];
+  
+  // Transformar dia (ISODOW) a string
+  const diaMap = { 4: 'jueves', 5: 'viernes', 3: 'miércoles' };
+
+  const rows = data.map(r => {
+    const dp = r.datos_personales || {};
+    // Formato exacto de convocatoria: "Apellido, Nombre"
+    const nombreCompleto = (dp.apellido && dp.nombre) ? `${dp.apellido}, ${dp.nombre}` : '';
+    
+    return [
+      nombreCompleto,
+      diaMap[r.dia_semana] || r.dia_semana,
+      r.grupo === 'manana' ? 'mañana' : (r.grupo === 'tarde' ? 'tarde' : r.grupo)
+    ];
+  });
+  
+  // Render en hoja
+  sheet.clear();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold')
+    .setBackground('#10b981') // Emerald green
+    .setFontColor('#ffffff');
+  
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    sheet.autoResizeColumns(1, 3);
+  }
+  
+  sheet.setFrozenRows(1);
+  SpreadsheetApp.getUi().alert('✅ Exportación exitosa: ' + rows.length + ' registros procesados.');
+}
