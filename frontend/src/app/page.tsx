@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Calendar, Users, Settings, RefreshCcw, Activity, ShieldAlert, ArrowRightLeft, Check, XCircle, AlertCircle, MapPin, UserMinus, UserPlus, FileBox, Search, User, MonitorSmartphone, Undo2, LockKeyhole } from 'lucide-react';
+import { Calendar, Users, Settings, RefreshCcw, Activity, ShieldAlert, ArrowRightLeft, Check, XCircle, AlertCircle, MapPin, UserMinus, UserPlus, FileBox, Search, User, MonitorSmartphone, Undo2, LockKeyhole, LayoutDashboard, Clock } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 
 // === Global App State Mock ===
@@ -52,12 +52,14 @@ export default function AsignacionesApp() {
   const [activeTab, setActiveTab] = useState<string>('plan'); // 'plan', 'exec', 'devices', 'menu'
   const [selectedMonth, setSelectedMonth] = useState("Marzo 2026");
   const [selectedShift, setSelectedShift] = useState("Apertura al Público");
+  const isSemana = selectedShift !== "Apertura al Público";
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   // DB States
   const [dbDevices, setDbDevices] = useState<{ id: string, name: string, min: number, max: number }[]>(MOCK_DEVICES_BACKUP);
   const [dbResidents, setDbResidents] = useState<{ id_agente: number, nombre: string, apellido: string }[]>([]);
   const [allResidentsDb, setAllResidentsDb] = useState<{ id: number, name: string, caps: Record<string, string> }[]>([]);
-  const [assignmentsDb, setAssignmentsDb] = useState<Record<string, Record<string, { id: number, name: string, score: number }[]>>>({});
+  const [assignmentsDb, setAssignmentsDb] = useState<Record<string, Record<string, { id: number, name: string, score: number, numero_grupo?: number | null }[]>>>({});
   const [agentGroups, setAgentGroups] = useState<Record<string, string>>({});
   const [calendarDb, setCalendarDb] = useState<Record<string, Record<string, number>>>({}); // { '07/03': { 'd1': 1, 'd2': 2 } }
   const [convocadosCountDb, setConvocadosCountDb] = useState<Record<string, number>>({}); // { '07/03': 15 }
@@ -73,6 +75,7 @@ export default function AsignacionesApp() {
   const [showVacantsSidebar, setShowVacantsSidebar] = useState(false);
   const [selectedVacant, setSelectedVacant] = useState<{ id: number, name: string, date: string } | null>(null);
   const [convocadosDb, setConvocadosDb] = useState<Record<string, number[]>>({}); // { '07/03': [id1, id2] }
+  const [agentConvocatoriaMap, setAgentConvocatoriaMap] = useState<Record<string, Record<number, number>>>({}); // { '07/03': { agentId: id_conv } }
 
   // === UndoStack con persistencia en localStorage ===
   // IMPORTANTE: Inicializar en [] para SSR. Cargar desde localStorage en useEffect (cliente solo).
@@ -175,7 +178,7 @@ export default function AsignacionesApp() {
         alert('Error al deshacer: ' + anyError.error.message);
       } else {
         popUndo();
-        window.location.reload();
+        setRefreshCounter(prev => prev + 1);
       }
     } catch (e: any) {
       alert('Excepción al deshacer: ' + e.message);
@@ -185,6 +188,7 @@ export default function AsignacionesApp() {
   useEffect(() => {
     async function loadInitialData() {
       setIsLoading(true);
+      let residentsMap: Record<number, { id: number, name: string, caps: Record<string, string> }> = {};
       try {
         // Fetch Dispositivos
         const { data: dispoData, error: dispoErr } = await supabase
@@ -250,7 +254,6 @@ export default function AsignacionesApp() {
           });
 
           // Armar el ALL_RESIDENTS_DB (nombre y sus caps)
-          const residentsMap: Record<number, { id: number, name: string, caps: Record<string, string> }> = {};
           resiData.forEach(r => {
             residentsMap[r.id_agente] = {
               id: r.id_agente,
@@ -306,21 +309,43 @@ export default function AsignacionesApp() {
         const endOfMonth = `${yFilt}-${mmFilt}-${lastDay}`;
 
         // Fetch Asignaciones para construir la Matriz (DAMA Menu Table)
-        const { data: menuData, error: menuErr } = await supabase
-          .from('menu')
-          .select('id_agente, id_dispositivo, fecha_asignacion, estado_ejecucion, orden')
-          .gte('fecha_asignacion', startOfMonth)
-          .lte('fecha_asignacion', endOfMonth);
+        const tableToFetch = isSemana ? 'menu_semana' : 'menu';
+
+        // Pre-fetch turnos para saber el ID del turno de semana que estamos visualizando
+        const { data: turnosFiltro } = await supabase.from('turnos').select('id_turno, tipo_turno');
+        const activeTurnoObj = turnosFiltro?.find(t => t.tipo_turno.toLowerCase().includes(selectedShift.toLowerCase().replace('turno ', '')));
+        const activeTurnoId = activeTurnoObj?.id_turno;
+
+        let query: any;
+        if (isSemana) {
+          query = supabase.from(tableToFetch)
+            .select('id_agente, id_dispositivo, fecha_asignacion, estado_ejecucion, orden, numero_grupo, tipo_organizacion')
+            .gte('fecha_asignacion', startOfMonth)
+            .lte('fecha_asignacion', endOfMonth);
+        } else {
+          query = supabase.from(tableToFetch)
+            .select('id_agente, id_dispositivo, fecha_asignacion, estado_ejecucion, orden')
+            .gte('fecha_asignacion', startOfMonth)
+            .lte('fecha_asignacion', endOfMonth);
+        }
+
+        if (isSemana && activeTurnoId) {
+          query = query.eq('id_turno', activeTurnoId);
+        }
+
+        const { data: menuData, error: menuErr } = await query;
         // Ya no filtramos por "planificado" para poder traernos tambien a los "descanso" y contarlos.
 
         if (menuData && resiData) {
-          const matrix: Record<string, Record<string, { id: number, name: string, score: number }[]>> = {};
+          const matrix: Record<string, Record<string, { id: number, name: string, score: number, numero_grupo?: number | null }[]>> = {};
           const convocadosCount: Record<string, number> = {};
           const convocadosList: Record<string, number[]> = {};
 
           // Helper dict para sacar rápido los nombres
           const nameDict: Record<number, string> = {};
           resiData.forEach(r => nameDict[r.id_agente] = `${r.apellido} ${r.nombre}`);
+
+          const newOrgTypes: Record<string, string> = {};
 
           menuData.forEach(a => {
             if (!a.fecha_asignacion) return;
@@ -334,6 +359,10 @@ export default function AsignacionesApp() {
               if (y !== yFilt || m !== mmFilt) return;
 
               const uiDate = `${d}/${m}`;
+
+              if (isSemana && a.tipo_organizacion) {
+                newOrgTypes[uiDate] = a.tipo_organizacion.replace(' ', '_');
+              }
 
               // DEDUPLICAR: un agente puede tener múltiples filas por bugs previos.
               // Solo lo contamos UNA vez por fecha.
@@ -349,10 +378,17 @@ export default function AsignacionesApp() {
                 if (!matrix[uiDate]) matrix[uiDate] = {};
                 if (!matrix[uiDate][dId]) matrix[uiDate][dId] = [];
 
+                let calculatedScore = a.orden || 1000;
+                if (isSemana) {
+                  const rCaps = residentsMap[a.id_agente]?.caps || {};
+                  calculatedScore = Object.keys(rCaps).includes(dId) ? 950 : 200;
+                }
+
                 matrix[uiDate][dId].push({
                   id: a.id_agente,
                   name: nameDict[a.id_agente] || "Desconocido",
-                  score: a.orden || 1000 // Usamos el Score almacenado en el backend o su default
+                  score: calculatedScore,
+                  numero_grupo: a.numero_grupo
                 });
               }
             }
@@ -408,14 +444,19 @@ export default function AsignacionesApp() {
               if (aperturaPlaniIds.length > 0) {
                 const { data: convData } = await supabase
                   .from('convocatoria')
-                  .select('id_plani, id_agente')
+                  .select('id_convocatoria, id_plani, id_agente')
                   .eq('estado', 'vigente')
                   .in('id_plani', aperturaPlaniIds);
 
                 if (convData) {
+                  const dateAgentConv: Record<string, Record<number, number>> = {};
                   convData.forEach((c: any) => {
                     const uiDate = planiToUiDate[c.id_plani];
                     if (!uiDate) return;
+
+                    if (!dateAgentConv[uiDate]) dateAgentConv[uiDate] = {};
+                    dateAgentConv[uiDate][c.id_agente] = c.id_convocatoria;
+
                     if (!convocadosList[uiDate]) convocadosList[uiDate] = [];
                     if (!convocadosList[uiDate].includes(c.id_agente)) {
                       convocadosList[uiDate].push(c.id_agente);
@@ -423,6 +464,7 @@ export default function AsignacionesApp() {
                     }
                   });
                   // Update states with merged data
+                  setAgentConvocatoriaMap(dateAgentConv);
                   setConvocadosCountDb({ ...convocadosCount });
                   setConvocadosDb({ ...convocadosList });
                 }
@@ -431,6 +473,8 @@ export default function AsignacionesApp() {
           } catch (convErr) {
             console.error("Error cargando convocatoria para convocados:", convErr);
           }
+
+          setOrgTypes(newOrgTypes);
 
           // Llenar calendarDb con cupos reales de calendario_dispositivos (NO con .length de matrix)
           const newCalendarDb: Record<string, Record<string, number>> = {};
@@ -584,13 +628,14 @@ export default function AsignacionesApp() {
     }
 
     loadInitialData();
-  }, [selectedMonth, selectedShift]);
+  }, [selectedMonth, selectedShift, refreshCounter]);
 
   // States for Execution Tab
   const [execDate, setExecDate] = useState("07/03");
   const [showRestingModal, setShowRestingModal] = useState(false);
   const [showDevicesMenu, setShowDevicesMenu] = useState(false);
   const [expandedDeviceForAssignment, setExpandedDeviceForAssignment] = useState<string | null>(null);
+  const [orgTypes, setOrgTypes] = useState<Record<string, string>>({});
 
   // Helper: verificar si un agente tiene inasistencia para una fecha UI
   const isAgentAbsent = (agentId: number, uiDate: string): boolean => {
@@ -599,6 +644,23 @@ export default function AsignacionesApp() {
   const getAbsenceMotivo = (agentId: number, uiDate: string): string => {
     const found = (inasistenciasDb[uiDate] || []).find(x => x.id_agente === agentId);
     return found?.motivo || '';
+  };
+
+  const getGroupColor = (num: number | null) => {
+    if (!num) return "bg-slate-500 text-white border-slate-600 shadow-sm";
+    if (num === 1) return "bg-cyan-500 text-white border-cyan-600 shadow-[0_0_8px_rgba(6,182,212,0.4)]";
+    if (num === 2) return "bg-rose-500 text-white border-rose-600 shadow-[0_0_8px_rgba(244,63,94,0.4)]";
+    if (num === 3) return "bg-amber-500 text-white border-amber-600 shadow-[0_0_8px_rgba(245,158,11,0.4)]";
+    return "bg-indigo-600 text-white border-indigo-700 shadow-[0_0_8px_rgba(79,70,229,0.4)]";
+  };
+
+
+  const getGroupUnderline = (num: number | null) => {
+    if (!num) return "";
+    if (num === 1) return "border-b-2 border-cyan-500";
+    if (num === 2) return "border-b-2 border-rose-500";
+    if (num === 3) return "border-b-2 border-amber-500";
+    return "border-b-2 border-indigo-500";
   };
 
   const getScoreColor = (score: number) => {
@@ -621,60 +683,51 @@ export default function AsignacionesApp() {
     return "bg-slate-100 text-slate-800";
   };
 
-  const toggleAbsent = async (name: string, deviceName: string) => {
-    // Buscar id del residente y del dispositivo
-    const resNameMatch = name.toLowerCase();
-    const dbRes = dbResidents.find(r => r.apellido.toLowerCase().includes(resNameMatch) || r.nombre.toLowerCase().includes(resNameMatch));
-    const dbDisp = dbDevices.find(d => d.name === deviceName);
-
-    if (dbRes && dbDisp) {
+  const toggleAbsent = async (agentId: number, deviceId: number) => {
+    try {
       const [d, mStr] = execDate.split("/");
       const yyyy = selectedMonth.split(" ")[1] || "2026";
       const fechaDB = `${yyyy}-${mStr}-${d}`;
+      const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+      const turnoId = dateTurnoMap[execDate] || 1;
 
-      try {
-        setIsLoading(true);
-        // Si estaba en la grilla y apretaron que faltó, lo borramos de la asignación 
-        // (En DAMA marcaríamos 'ausente_aviso', para borrarlo de UI lo pasamos a inactivo rápido)
-        const { error } = await supabase
-          .from('menu')
-          .delete()
-          .eq('id_agente', dbRes.id_agente)
-          .eq('id_dispositivo', dbDisp.id)
-          .eq('fecha_asignacion', fechaDB);
+      setIsLoading(true);
+      // En lugar de borrar, lo movemos a Vacantes (999)
+      const { error } = await supabase
+        .from(tableToMutate)
+        .update({ id_dispositivo: 999 })
+        .eq('id_agente', agentId)
+        .eq('id_dispositivo', deviceId)
+        .eq('fecha_asignacion', fechaDB)
+        .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
 
-        if (!error) {
-          window.location.reload();
-        } else {
-          alert("Error Supabase: " + error.message);
-          setIsLoading(false);
-        }
-      } catch (e: any) {
-        alert("Excepción: " + e.message);
+      if (!error) {
+        setRefreshCounter(prev => prev + 1);
+      } else {
+        alert("Error Supabase: " + error.message);
         setIsLoading(false);
       }
+    } catch (e: any) {
+      alert("Excepción: " + e.message);
+      setIsLoading(false);
     }
   };
-
-  // Mutación: Asignar residente huérfano (P0) a un dispositivo con vacante
   const handleAssignFromPool = async (residentName: string) => {
     const resNameMatch = residentName.toLowerCase();
     const dbRes = dbResidents.find(r => r.apellido.toLowerCase().includes(resNameMatch) || r.nombre.toLowerCase().includes(resNameMatch));
-
-    // Buscar el primer dispositivo que tenga espacio
     const dispList = dbDevices;
     let targetDisp = null;
 
     for (const d of dispList) {
       const assigs = assignmentsDb[execDate]?.[d.id] || [];
-      if (assigs.length < d.max) { // Si hay lugar físico respecto al cupo optimo/maximo
+      if (assigs.length < d.max) {
         targetDisp = d;
         break;
       }
     }
 
     if (!targetDisp) {
-      alert("Actualmente consideramos que el Centro está saturado (No hay dispositivos con cupo libre asignable automáticamente). Busca un reemplazo manual.");
+      alert("Centro saturado. Busca un reemplazo manual.");
       return;
     }
 
@@ -683,21 +736,28 @@ export default function AsignacionesApp() {
       const yyyy = selectedMonth.split(" ")[1] || "2026";
       const fechaDB = `${yyyy}-${mStr}-${day}`;
 
-      // FIXME: Requiere id_turno. Como es UI reactiva hardcodearemos turno 1,
-      // La solución final requiere la UI seleccionando el turno Activo (Mañana/Tarde)
       try {
+        const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+        const turnoId = dateTurnoMap[execDate] || 1;
+        const convId = agentConvocatoriaMap[execDate]?.[dbRes.id_agente] || 0;
+
+        const payload: any = {
+          id_agente: dbRes.id_agente,
+          id_dispositivo: Number(targetDisp.id),
+          fecha_asignacion: fechaDB,
+          estado_ejecucion: 'planificado',
+          id_convocatoria: convId
+        };
+        if (isSemana) {
+          payload.id_turno = turnoId;
+          payload.tipo_organizacion = (orgTypes[execDate] || 'dispositivos_fijos').replace('_', ' ');
+        }
+
         setIsLoading(true);
-        const { error } = await supabase
-          .from('menu')
-          .insert([{
-            id_agente: dbRes.id_agente,
-            id_dispositivo: Number(targetDisp.id),
-            fecha_asignacion: fechaDB,
-            estado_ejecucion: 'planificado'
-          }]);
+        const { error } = await supabase.from(tableToMutate).insert([payload]);
 
         if (!error) {
-          window.location.reload();
+          setRefreshCounter(prev => prev + 1);
         } else {
           alert("Error Inserción: " + error.message);
           setIsLoading(false);
@@ -709,37 +769,88 @@ export default function AsignacionesApp() {
     }
   };
 
-  // Mutación: Forzar asignación a un dispositivo puntual (Usado para Abrir un dispositivo on-the-fly)
-  const handleAssignToDevice = async (residentName: string, deviceId: string) => {
-    const resNameMatch = residentName.toLowerCase();
-    const dbRes = dbResidents.find(r => r.apellido.toLowerCase().includes(resNameMatch) || r.nombre.toLowerCase().includes(resNameMatch));
+  const handleAssignToDevice = async (agentId: number, deviceId: string) => {
+    const [day, mStr] = execDate.split("/");
+    const yyyy = selectedMonth.split(" ")[1] || "2026";
+    const fechaDB = `${yyyy}-${mStr}-${day}`;
 
-    if (dbRes) {
-      const [day, mStr] = execDate.split("/");
-      const yyyy = selectedMonth.split(" ")[1] || "2026";
-      const fechaDB = `${yyyy}-${mStr}-${day}`;
+    try {
+      const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+      const turnoId = dateTurnoMap[execDate] || 1;
+      const targetDevId = parseInt(deviceId);
 
-      try {
-        setIsLoading(true);
-        const { error } = await supabase
-          .from('menu')
-          .insert([{
-            id_agente: dbRes.id_agente,
-            id_dispositivo: Number(deviceId),
-            fecha_asignacion: fechaDB,
-            estado_ejecucion: 'planificado'
-          }]);
+      setIsLoading(true);
 
-        if (!error) {
-          window.location.reload();
-        } else {
-          alert("Error Inserción: " + error.message);
-          setIsLoading(false);
-        }
-      } catch (e: any) {
-        alert("Exception: " + e.message);
+      // 1. Buscar si ya existe una fila (ej. en Vacantes o en otro piso)
+      const { data: existing } = await supabase.from(tableToMutate)
+        .select('*')
+        .eq('id_agente', agentId)
+        .eq('fecha_asignacion', fechaDB)
+        .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+
+      const sameDevice = existing?.find(m => m.id_dispositivo === targetDevId);
+      const vacanteRow = existing?.find(m => m.id_dispositivo === 999);
+      const inheritedGroup = existing?.find(m => m.numero_grupo)?.numero_grupo || null;
+      const isRotation = orgTypes[execDate] === 'rotacion_simple' || orgTypes[execDate] === 'rotacion_completa';
+
+      if (sameDevice) {
+        // Ya esta asignado aqui, solo recargar
         setIsLoading(false);
+        return;
       }
+
+      if (vacanteRow) {
+        // Mover de vacantes a este dispositivo
+        const { error } = await supabase.from(tableToMutate)
+          .update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', agentId)
+          .eq('id_dispositivo', 999)
+          .eq('fecha_asignacion', fechaDB)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+        if (error) alert("Error Move: " + error.message);
+      } else if (isRotation) {
+        // Nuevo Insert (Rotacion permite multiples)
+        const convId = agentConvocatoriaMap[execDate]?.[agentId] || 0;
+        const payload: any = {
+          id_agente: agentId,
+          id_dispositivo: targetDevId,
+          fecha_asignacion: fechaDB,
+          estado_ejecucion: 'planificado'
+        };
+        if (convId > 0) payload.id_convocatoria = convId;
+        if (inheritedGroup) payload.numero_grupo = inheritedGroup;
+        if (isSemana) {
+          payload.id_turno = turnoId;
+          payload.tipo_organizacion = (orgTypes[execDate] || 'dispositivos_fijos').replace('_', ' ');
+        }
+        const { error } = await supabase.from(tableToMutate).insert([payload]);
+        if (error) alert("Error Insert: " + error.message);
+      } else if (existing && existing.length > 0) {
+        // Modo Fijo: Mover de un dispositivo a otro
+        const { error } = await supabase.from(tableToMutate)
+          .update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', agentId)
+          .eq('id_dispositivo', existing[0].id_dispositivo)
+          .eq('fecha_asignacion', fechaDB)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+        if (error) alert("Error Update: " + error.message);
+      } else {
+        // Case: No existe fila (Descanso -> Asignado)
+        const convId = agentConvocatoriaMap[execDate]?.[agentId] || 0;
+        const payload: any = { id_agente: agentId, id_dispositivo: targetDevId, fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+        if (convId > 0) payload.id_convocatoria = convId;
+        if (isSemana) {
+          payload.id_turno = turnoId;
+          payload.tipo_organizacion = (orgTypes[execDate] || 'dispositivos_fijos').replace('_', ' ');
+        }
+        const { error } = await supabase.from(tableToMutate).insert([payload]);
+        if (error) alert("Error New: " + error.message);
+      }
+
+      setRefreshCounter(prev => prev + 1);
+    } catch (e: any) {
+      alert("Exception: " + e.message);
+      setIsLoading(false);
     }
   };
 
@@ -763,60 +874,105 @@ export default function AsignacionesApp() {
       const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`; // Asumiendo YYYY-MM-DD
 
       try {
+        const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+        const turnoId = dateTurnoMap[selectedResident.date] || 1;
         setIsLoading(true);
 
         // Paso 1: Snapshot DEL ORIGINAL para Undo compuesto
-        const { data: snapOriginal, error: e1 } = await supabase
-          .from('menu')
+        let snapQuery = supabase
+          .from(tableToMutate)
           .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion, id_convocatoria, orden')
           .eq('id_agente', oldRes.id_agente)
           .eq('id_dispositivo', Number(disp.id))
-          .eq('fecha_asignacion', fechaDB)
-          .maybeSingle();
+          .eq('fecha_asignacion', fechaDB);
+
+        if (isSemana) snapQuery = snapQuery.eq('id_turno', turnoId);
+
+        const { data: snapOriginal, error: e1 } = await snapQuery.maybeSingle();
 
         if (e1) { alert("Error Paso 1: " + e1.message); setIsLoading(false); return; }
         if (!snapOriginal) { alert(`Paso 1: No hay fila para agente=${oldRes.id_agente} disp=${disp.id} fecha=${fechaDB}`); setIsLoading(false); return; }
 
         // Paso 2: Mover original a vacantes (id_dispositivo = 999)
-        const { error: e2 } = await supabase
-          .from('menu')
+        let moveQuery = supabase
+          .from(tableToMutate)
           .update({ id_dispositivo: 999, estado_ejecucion: 'planificado' })
           .eq('id_agente', oldRes.id_agente)
+          .eq('id_dispositivo', Number(disp.id))
           .eq('fecha_asignacion', fechaDB);
+
+        if (isSemana) {
+          moveQuery = moveQuery.eq('id_turno', turnoId);
+        }
+
+        const { error: e2 } = await moveQuery;
 
         if (e2) { alert("Error Paso 2: " + e2.message); setIsLoading(false); return; }
 
         // Paso 3: Buscar snapshot DEL NUEVO (para Undo compuesto) y actualizar su dispositivo
-        const { data: filaNew, error: e3 } = await supabase
-          .from('menu')
+        let searchNewQuery = supabase
+          .from(tableToMutate)
           .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion')
           .eq('id_agente', newRes.id_agente)
-          .eq('fecha_asignacion', fechaDB)
-          .maybeSingle();
+          .eq('fecha_asignacion', fechaDB);
+
+        if (isSemana) searchNewQuery = searchNewQuery.eq('id_turno', turnoId);
+
+        const { data: filaNew, error: e3 } = await searchNewQuery.maybeSingle();
 
         if (e3) { alert("Error Paso 3: " + e3.message); setIsLoading(false); return; }
 
         if (filaNew) {
-          // Paso 4a: El nuevo ya tiene fila (estaba vacante) → actualizar a este dispositivo
-          const { error: e4 } = await supabase
-            .from('menu')
-            .update({ id_dispositivo: Number(disp.id), estado_ejecucion: 'planificado' })
-            .eq('id_agente', newRes.id_agente)
-            .eq('fecha_asignacion', fechaDB);
+          const isRotation = orgTypes[selectedResident.date] === 'rotacion_simple' || orgTypes[selectedResident.date] === 'rotacion_completa';
+          const targetDeviceRow = filaNew ? (Array.isArray(filaNew) ? filaNew.find((f: any) => f.id_dispositivo === Number(disp.id)) : (filaNew.id_dispositivo === Number(disp.id) ? filaNew : null)) : null;
+          const vacanteRow = filaNew ? (Array.isArray(filaNew) ? filaNew.find((f: any) => f.id_dispositivo === 999) : (filaNew.id_dispositivo === 999 ? filaNew : null)) : null;
 
-          if (e4) { alert("Error Paso 4a: " + e4.message); setIsLoading(false); return; }
+          if (targetDeviceRow) {
+            // Already there
+            pushUndo({ snapshots: [snapOriginal] });
+          } else if (vacanteRow) {
+            // Move from 999 to target
+            await supabase.from(tableToMutate).update({ id_dispositivo: Number(disp.id), estado_ejecucion: 'planificado' })
+              .eq('id_agente', newRes.id_agente).eq('fecha_asignacion', fechaDB).eq('id_dispositivo', 999)
+              .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : newRes.id_agente);
+            pushUndo({ snapshots: [snapOriginal, vacanteRow] });
+          } else if (isRotation) {
+            // New insert
+            const payload: any = { id_agente: newRes.id_agente, id_dispositivo: Number(disp.id), fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+            if (isSemana) { payload.id_turno = turnoId; payload.tipo_organizacion = (orgTypes[selectedResident.date] || 'dispositivos_fijos').replace('_', ' '); }
+            const convId = agentConvocatoriaMap[selectedResident.date]?.[newRes.id_agente] || 0;
+            if (convId > 0) payload.id_convocatoria = convId;
+            // Inherit group from the original resident if it exists
+            const inheritedGroup = snapOriginal.numero_grupo || null;
+            if (inheritedGroup) payload.numero_grupo = inheritedGroup;
 
-          // Guardar undo compuesto: revertir AMBOS residentes en una sola pulsación de Deshacer
-          pushUndo({ snapshots: [snapOriginal, filaNew] });
+            const { error: insErr } = await supabase.from(tableToMutate).insert([payload]);
+            if (insErr) { alert("Error al insertar nuevo en rotación: " + insErr.message); setIsLoading(false); return; }
+            pushUndo({ snapshots: [snapOriginal, { id_agente: newRes.id_agente, fecha_asignacion: fechaDB, id_dispositivo: Number(disp.id), _isInsert: true }] });
+          } else {
+            // Traditional move
+            await supabase.from(tableToMutate).update({ id_dispositivo: Number(disp.id), estado_ejecucion: 'planificado' })
+              .eq('id_agente', newRes.id_agente).eq('fecha_asignacion', fechaDB).eq('id_dispositivo', (Array.isArray(filaNew) ? filaNew[0].id_dispositivo : (filaNew as any).id_dispositivo))
+              .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : newRes.id_agente);
+            pushUndo({ snapshots: [snapOriginal, (Array.isArray(filaNew) ? filaNew[0] : filaNew)] });
+          }
         } else {
-          // Paso 4b: El nuevo no tiene fila (en descanso) → insertar nueva con id_convocatoria del original
-          const { error: e4 } = await supabase.from('menu').insert([{
+          // Paso 4b: El nuevo no tiene fila (en descanso) → insertar nueva
+          const payloadInsert: any = {
             id_agente: newRes.id_agente,
             id_dispositivo: Number(disp.id),
             fecha_asignacion: fechaDB,
             estado_ejecucion: 'planificado',
-            id_convocatoria: snapOriginal.id_convocatoria ?? 0
-          }]);
+          };
+
+          if (isSemana) {
+            payloadInsert.id_turno = turnoId;
+            payloadInsert.tipo_organizacion = (orgTypes[selectedResident.date] || 'dispositivos_fijos').replace('_', ' ');
+          }
+          const convId = agentConvocatoriaMap[selectedResident.date]?.[newRes.id_agente] || snapOriginal.id_convocatoria || 0;
+          if (convId > 0) payloadInsert.id_convocatoria = convId;
+
+          const { error: e4 } = await supabase.from(tableToMutate).insert([payloadInsert]);
 
           if (e4) { alert("Error Paso 4b: " + e4.message); setIsLoading(false); return; }
 
@@ -825,7 +981,7 @@ export default function AsignacionesApp() {
         }
 
         setSelectedResident(null);
-        window.location.reload();
+        setRefreshCounter(prev => prev + 1);
       } catch (e: any) {
         alert("Excepción en intercambio: " + e.message);
         setIsLoading(false);
@@ -848,10 +1004,20 @@ export default function AsignacionesApp() {
       const [d, mStr] = selectedResident.date.split("/");
       const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`; // YYYY-MM-DD
 
-      const { error } = await supabase.from('menu')
+      const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+
+      const deviceOfRes = dbDevices.find(d => d.name === selectedResident.device);
+      let removeQuery = supabase.from(tableToMutate)
         .update({ id_dispositivo: 999, estado_ejecucion: 'planificado' })
         .eq('id_agente', selectedResident.id)
+        .eq('id_dispositivo', Number(deviceOfRes?.id || 0))
         .eq('fecha_asignacion', fechaDB);
+
+      if (isSemana) {
+        removeQuery = removeQuery.eq('id_turno', dateTurnoMap[selectedResident.date] || 1);
+      }
+
+      const { error } = await removeQuery;
 
       if (error) {
         alert("Error de DB al quitar la asignación: " + error.message);
@@ -870,10 +1036,48 @@ export default function AsignacionesApp() {
         }
 
         setSelectedResident(null);
-        window.location.reload();
+        setRefreshCounter(prev => prev + 1);
       }
     } catch (e: any) {
       alert("Error al quitar: " + e.message);
+      setIsLoading(false);
+    }
+  };
+
+  const handleSetGroup = async (res: any, date: string, deviceId: number) => {
+    const newGroup = prompt(`Grupo para ${res.name}:`, res.numero_grupo || "");
+    if (newGroup === null) return;
+
+    const groupNum = parseInt(newGroup) || null;
+    setIsLoading(true);
+    try {
+      const yyyy = selectedMonth.split(" ")[1] || "2026";
+      const [dStr, mmStr] = date.split("/");
+      const fechaDB = `${yyyy}-${mmStr}-${dStr}`;
+      const turnoId = dateTurnoMap[date] || 1;
+
+      // Si no tiene grupo previo ("G?"), propagamos a todos sus pisos del dia/turno
+      if (!res.numero_grupo) {
+        const { error } = await supabase.from('menu_semana')
+          .update({ numero_grupo: groupNum })
+          .eq('id_agente', res.id)
+          .eq('fecha_asignacion', fechaDB)
+          .eq('id_turno', turnoId);
+        if (error) alert("Error de propagación: " + error.message);
+      } else {
+        // Si ya tenia grupo, el cambio es 1 a 1 (sobre el dispositivo actual)
+        const { error } = await supabase.from('menu_semana')
+          .update({ numero_grupo: groupNum })
+          .eq('id_agente', res.id)
+          .eq('id_dispositivo', deviceId)
+          .eq('fecha_asignacion', fechaDB)
+          .eq('id_turno', turnoId);
+        if (error) alert("Error: " + error.message);
+      }
+      setRefreshCounter(prev => prev + 1);
+    } catch (err: any) {
+      alert("Excepción: " + err.message);
+    } finally {
       setIsLoading(false);
     }
   };
@@ -897,14 +1101,108 @@ export default function AsignacionesApp() {
       if (!res.ok) throw new Error(data.error);
 
       alert("✅ IA Ejecutada con éxito.");
-      window.location.reload();
+      setRefreshCounter(prev => prev + 1);
     } catch (e: any) {
       alert("Error en Motor IA: " + e.message);
       setIsLoading(false);
     }
   };
 
-  // Mutación: Asignar a un residente Vacante a un Dispositivo en la UI
+  const handleDirectAssign = async (agentId: number, date: string, deviceId: string) => {
+    if (isLoading) return;
+    try {
+      const yyyy = selectedMonth.split(" ")[1] || "2026";
+      const [d, mStr] = date.split("/");
+      const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`;
+
+      const cupo = calendarDb[date]?.[deviceId] || 0;
+      const currentAssigned = assignmentsDb[date]?.[deviceId]?.length || 0;
+
+      let updateCupo = false;
+      if (currentAssigned >= cupo) {
+        if (!confirm(`El dispositivo está actualmente sin plazas (ocupación: ${currentAssigned} de ${cupo}). ¿Deseas ampliar el cupo a ${currentAssigned + 1} lugares y forzar la asignación de todos modos?`)) {
+          return;
+        }
+        updateCupo = true;
+      }
+
+      setIsLoading(true);
+
+      if (updateCupo) {
+        const turnoId = dateTurnoMap[date] || 1;
+        await supabase.from('calendario_dispositivos').delete()
+          .eq('id_dispositivo', parseInt(deviceId))
+          .eq('fecha', fechaDB)
+          .eq('id_turno', turnoId);
+
+        await supabase.from('calendario_dispositivos').insert({
+          id_dispositivo: parseInt(deviceId),
+          fecha: fechaDB,
+          id_turno: turnoId,
+          cupo_objetivo: currentAssigned + 1
+        });
+      }
+
+      const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+      const turnoId = dateTurnoMap[date] || 1;
+
+      // Buscar asignaciones existentes para este agente/fecha/turno
+      const { data: existingAssignments, error: findErr } = await supabase.from(tableToMutate)
+        .select('*')
+        .eq('id_agente', agentId)
+        .eq('fecha_asignacion', fechaDB)
+        .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+
+      if (findErr) { alert("Error: " + findErr.message); setIsLoading(false); return; }
+
+      const isRotation = orgTypes[date] === 'rotacion_simple' || orgTypes[date] === 'rotacion_completa';
+      const targetDevId = parseInt(deviceId);
+      const sameDevice = existingAssignments?.find(m => m.id_dispositivo === targetDevId);
+      const vacanteRow = existingAssignments?.find(m => m.id_dispositivo === 999);
+      const existingGroup = existingAssignments?.find(m => m.numero_grupo)?.numero_grupo || null;
+
+      if (sameDevice) {
+        await supabase.from(tableToMutate).update({ estado_ejecucion: 'planificado' })
+          .eq('id_agente', agentId).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', targetDevId)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+      } else if (vacanteRow) {
+        // Si estaba en vacantes, siempre lo "movemos" al dispositivo (incluso en rotación)
+        await supabase.from(tableToMutate).update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', agentId).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', 999)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+      } else if (isRotation) {
+        // Nuevo insert para este dispositivo
+        const payload: any = { id_agente: agentId, id_dispositivo: targetDevId, fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+        if (isSemana) { payload.id_turno = turnoId; payload.tipo_organizacion = (orgTypes[date] || 'dispositivos_fijos').replace('_', ' '); }
+        const convId = agentConvocatoriaMap[date]?.[agentId] || 0;
+        if (convId > 0) payload.id_convocatoria = convId;
+        if (existingGroup) payload.numero_grupo = existingGroup;
+        const { error: insErr } = await supabase.from(tableToMutate).insert([payload]);
+        if (insErr) alert("Error insertando: " + insErr.message);
+      } else if (existingAssignments && existingAssignments.length > 0) {
+        // Movemos el primero que encontremos
+        await supabase.from(tableToMutate).update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', agentId).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', existingAssignments[0].id_dispositivo)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? turnoId : agentId);
+      } else {
+        // Insert nuevo
+        const payload: any = { id_agente: agentId, id_dispositivo: targetDevId, fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+        if (isSemana) { payload.id_turno = turnoId; payload.tipo_organizacion = (orgTypes[date] || 'dispositivos_fijos').replace('_', ' '); }
+        const convId = agentConvocatoriaMap[date]?.[agentId] || 0;
+        if (convId > 0) payload.id_convocatoria = convId;
+        await supabase.from(tableToMutate).insert([payload]);
+      }
+      setSelectedDevice(null);
+      setRefreshCounter(prev => prev + 1);
+    } catch (e: any) {
+      alert("Excepción al asignar: " + e.message);
+      setIsLoading(false);
+    }
+  };
+
   const handleAssignVacant = async (deviceId: string) => {
     if (isLoading) return;
     if (!selectedVacant) return;
@@ -912,7 +1210,7 @@ export default function AsignacionesApp() {
     try {
       const yyyy = selectedMonth.split(" ")[1] || "2026";
       const [d, mStr] = selectedVacant.date.split("/");
-      const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`; // YYYY-MM-DD
+      const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${d.padStart(2, '0')}`;
 
       const cupo = calendarDb[selectedVacant.date]?.[deviceId] || 0;
       const currentAssigned = assignmentsDb[selectedVacant.date]?.[deviceId]?.length || 0;
@@ -928,11 +1226,9 @@ export default function AsignacionesApp() {
       setIsLoading(true);
 
       if (updateCupo) {
-        // Obtener id_turno de la fecha correspondiente
         const uiDateForTurno = selectedVacant?.date || '';
-        const turnoId = dateTurnoMap[uiDateForTurno] || 1; // fallback al turno principal (1)
+        const turnoId = dateTurnoMap[uiDateForTurno] || 1;
 
-        // Borrar registro existente y reinsertar (constraint incluye id_turno)
         await supabase.from('calendario_dispositivos').delete()
           .eq('id_dispositivo', parseInt(deviceId))
           .eq('fecha', fechaDB)
@@ -946,38 +1242,63 @@ export default function AsignacionesApp() {
         });
       }
 
-      const { data: existingMenu } = await supabase.from('menu')
-        .select('id_agente, id_dispositivo, estado_ejecucion, fecha_asignacion')
+      const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+      const tId = dateTurnoMap[selectedVacant.date] || 1;
+      const { data: currentAssignedGroup } = await supabase.from(tableToMutate).select('numero_grupo').eq('id_agente', selectedVacant.id).eq('fecha_asignacion', fechaDB).eq('id_turno', tId).not('numero_grupo', 'is', null);
+      const inheritedGroup = currentAssignedGroup && currentAssignedGroup.length > 0 ? currentAssignedGroup[0].numero_grupo : null;
+      const convId = agentConvocatoriaMap[selectedVacant.date]?.[selectedVacant.id] || 0;
+
+      // Buscar asignaciones existentes
+      const { data: existingAssignments, error: fErr } = await supabase.from(tableToMutate)
+        .select('*')
         .eq('id_agente', selectedVacant.id)
         .eq('fecha_asignacion', fechaDB)
-        .maybeSingle();
+        .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? tId : selectedVacant.id);
 
-      if (existingMenu) {
-        pushUndo({ snapshot: existingMenu });
+      if (fErr) { alert("Error: " + fErr.message); setIsLoading(false); return; }
 
-        // Update
-        await supabase.from('menu')
-          .update({ id_dispositivo: parseInt(deviceId), estado_ejecucion: 'planificado' })
-          .eq('id_agente', selectedVacant.id)
-          .eq('fecha_asignacion', fechaDB);
+      const isRotation = orgTypes[selectedVacant.date] === 'rotacion_simple' || orgTypes[selectedVacant.date] === 'rotacion_completa';
+      const targetDevId = parseInt(deviceId);
+      const sameDevice = existingAssignments?.find(m => m.id_dispositivo === targetDevId);
+      const vacanteRow = existingAssignments?.find(m => m.id_dispositivo === 999);
+
+      if (sameDevice) {
+        await supabase.from(tableToMutate).update({ estado_ejecucion: 'planificado' })
+          .eq('id_agente', selectedVacant.id).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', targetDevId)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? tId : selectedVacant.id);
+      } else if (vacanteRow) {
+        await supabase.from(tableToMutate).update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', selectedVacant.id).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', 999)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? tId : selectedVacant.id);
+      } else if (isRotation) {
+        const payload: any = { id_agente: selectedVacant.id, id_dispositivo: targetDevId, fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+        if (convId > 0) payload.id_convocatoria = convId;
+        if (inheritedGroup) payload.numero_grupo = inheritedGroup;
+        if (isSemana) { payload.id_turno = tId; payload.tipo_organizacion = (orgTypes[selectedVacant.date] || 'dispositivos_fijos').replace('_', ' '); }
+        await supabase.from(tableToMutate).insert([payload]);
+      } else if (existingAssignments && existingAssignments.length > 0) {
+        await supabase.from(tableToMutate).update({ id_dispositivo: targetDevId, estado_ejecucion: 'planificado' })
+          .eq('id_agente', selectedVacant.id).eq('fecha_asignacion', fechaDB)
+          .eq('id_dispositivo', existingAssignments[0].id_dispositivo)
+          .eq(isSemana ? 'id_turno' : 'id_agente', isSemana ? tId : selectedVacant.id);
       } else {
-        // Fallback Insert
-        await supabase.from('menu').insert([{
-          id_dispositivo: parseInt(deviceId),
-          id_agente: selectedVacant.id,
-          fecha_asignacion: fechaDB,
-          estado_ejecucion: 'planificado',
-          id_convocatoria: 0 // Mock fallback si no tiene conv.
-        }]);
+        const payload: any = { id_agente: selectedVacant.id, id_dispositivo: targetDevId, fecha_asignacion: fechaDB, estado_ejecucion: 'planificado' };
+        if (convId > 0) payload.id_convocatoria = convId;
+        if (inheritedGroup) payload.numero_grupo = inheritedGroup;
+        if (isSemana) { payload.id_turno = tId; payload.tipo_organizacion = (orgTypes[selectedVacant.date] || 'dispositivos_fijos').replace('_', ' '); }
+        await supabase.from(tableToMutate).insert([payload]);
       }
 
       setSelectedVacant(null);
-      window.location.reload();
+      setRefreshCounter(prev => prev + 1);
     } catch (e: any) {
       alert("Excepción al asignar vacante: " + e.message);
       setIsLoading(false);
     }
   };
+
 
   // Mutación: Guardar la matriz de dispositivos
   const handleSaveMatrixDevices = async () => {
@@ -1022,6 +1343,33 @@ export default function AsignacionesApp() {
 
         const { error } = await supabase.from('calendario_dispositivos').insert(payload);
         if (error) throw error;
+
+        // Persist orgTypes back to menu_semana
+        if (isSemana) {
+          const { data: turnosFiltro } = await supabase.from('turnos').select('id_turno, tipo_turno');
+          const activeTurnoObj = turnosFiltro?.find(t => t.tipo_turno.toLowerCase().includes(selectedShift.toLowerCase().replace('turno ', '')));
+          const activeTurnoId = activeTurnoObj?.id_turno;
+
+          if (activeTurnoId) {
+            for (const [uiDate, orgType] of Object.entries(orgTypes)) {
+              if (!uiDate) continue;
+              const [dDay, mStr] = uiDate.split("/");
+              const fechaDB = `${yyyy}-${mStr.padStart(2, '0')}-${dDay.padStart(2, '0')}`;
+              const dbOrgType = orgType.replace('_', ' ');
+
+              const { error: menuErr } = await supabase.from('menu_semana')
+                .update({ tipo_organizacion: dbOrgType })
+                .eq('fecha_asignacion', fechaDB)
+                .eq('id_turno', activeTurnoId);
+
+              if (menuErr) {
+                console.error("Error actualizando menu_semana:", menuErr);
+                alert("Error al guardar tipo_organizacion: " + menuErr.message);
+              }
+            }
+          }
+        }
+
         alert("Matriz de Dispositivos guardada con éxito.");
       } else {
         alert("No hay datos para guardar.");
@@ -1171,11 +1519,14 @@ export default function AsignacionesApp() {
       const isCapacitado = deviceId ? !!res.caps[deviceId] : false;
       const currentLocation = occupancies[res.id];
 
+      const isRotation = orgTypes[date] === 'rotacion_simple' || orgTypes[date] === 'rotacion_completa';
+      const isBusy = !!currentLocation && !isRotation;
+
       const alt = {
         name: res.name,
         id: res.id,
-        reason: isConvocado ? (currentLocation ? `Ocupado en: ${currentLocation}` : "Libre hoy") : "Descanso",
-        isBusy: !!currentLocation
+        reason: isConvocado ? (currentLocation ? (isRotation ? `También en: ${currentLocation}` : `Ocupado en: ${currentLocation}`) : "Libre hoy") : "Descanso",
+        isBusy: isBusy
       };
 
       // Prioridad: si tiene inasistencia, va al tier bloqueado
@@ -1533,12 +1884,14 @@ export default function AsignacionesApp() {
               >
                 <Undo2 className="w-4 h-4" /> Deshacer ({undoStack.length})
               </button>
-              <button
-                onClick={handleRunAI}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-1.5 rounded-xl transition-colors shadow-md text-sm flex items-center gap-2"
-              >
-                🔮 Generar
-              </button>
+              {!isSemana && (
+                <button
+                  onClick={handleRunAI}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-1.5 rounded-xl transition-colors shadow-md text-sm flex items-center gap-2"
+                >
+                  🔮 Generar
+                </button>
+              )}
             </div>
           </header>
         </>
@@ -1595,9 +1948,9 @@ export default function AsignacionesApp() {
                         <div className="p-3 bg-white space-y-2">
                           {assignmentsToday.map((a, i) => (
                             <div key={i} className="flex items-center justify-between text-sm font-medium text-slate-700 bg-slate-50 p-2 rounded border border-slate-100">
-                              <span>{a.name}</span>
+                              <span className={getGroupUnderline(a.numero_grupo)}>{a.name}</span>
                               <button
-                                onClick={() => toggleAbsent(a.name, device.name)}
+                                onClick={() => toggleAbsent(a.id, Number(device.id))}
                                 className="text-[10px] text-rose-600 hover:text-white hover:bg-rose-500 border border-rose-200 px-2 py-1 rounded transition-colors"
                               >
                                 Cerrar y Bajar
@@ -1624,22 +1977,95 @@ export default function AsignacionesApp() {
                         </div>
 
                         {isExpanded && (
-                          <div className="p-3 bg-slate-50 border-t border-slate-100 space-y-1 max-h-48 overflow-y-auto">
-                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Residentes Sin Asignar:</div>
-                            {unassignedResidents.length === 0 ? (
-                              <div className="text-xs text-slate-500 italic p-2 text-center">No hay residentes libres para asignar.</div>
-                            ) : (
-                              unassignedResidents.map((ur, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => handleAssignToDevice(ur.apellido, device.id)}
-                                  className="w-full text-left p-2 rounded text-xs border border-slate-200 bg-white hover:border-indigo-400 hover:bg-indigo-50 flex justify-between items-center group transition-colors"
-                                >
-                                  <span className="font-bold text-slate-700 group-hover:text-indigo-800">{ur.apellido}, {ur.nombre}</span>
-                                  <span className="text-[9px] text-slate-400 group-hover:text-indigo-500">Asignar aquí →</span>
-                                </button>
-                              ))
-                            )}
+                          <div className="p-3 bg-slate-50 border-t border-slate-100 space-y-4 max-h-[400px] overflow-y-auto">
+                            {(() => {
+                              const yyyy = selectedMonth.split(" ")[1] || "2026";
+                              const formattedExecDate = `${yyyy}-${execDate.split("/")[1]}-${execDate.split("/")[0]}`;
+                              const convocadosHoy = new Set(convocadosDb[execDate] || []);
+
+                              const tier1: any[] = []; // Convocado y Capacitado
+                              const tier2: any[] = []; // Convocado y NO Capacitado
+                              const tier3: any[] = []; // Descanso y Capacitado
+                              const tier4: any[] = []; // Descanso y NO Capacitado
+                              const tierInasistencias: any[] = [];
+
+                              const occupancies: Record<number, string> = {};
+                              Object.entries(assignmentsDb[execDate] || {}).forEach(([did, arr]) => {
+                                const devObj = dbDevices.find(d => d.id === did);
+                                arr.forEach((r: any) => occupancies[r.id] = devObj ? devObj.name : 'Otro');
+                              });
+
+                              allResidentsDb.forEach((res) => {
+                                const isConvocado = convocadosHoy.has(res.id);
+                                const isCapacitado = (() => {
+                                  const cDate = res.caps[device.id];
+                                  if (!cDate) return false;
+                                  return cDate <= formattedExecDate;
+                                })();
+                                const currentLocation = occupancies[res.id];
+                                const isRotation = orgTypes[execDate] === 'rotacion_simple' || orgTypes[execDate] === 'rotacion_completa';
+
+                                // Locks: Absent is ALWAYS busy. Fixed mode is busy if assigned elsewhere.
+                                const isAbsent = isAgentAbsent(res.id, execDate);
+                                const isBusy = isAbsent || (!!currentLocation && !isRotation);
+
+                                const alt = {
+                                  id: res.id,
+                                  name: res.name,
+                                  isBusy: isBusy,
+                                  group: assignmentsDb[execDate]?.["999"]?.find((v: any) => v.id === res.id)?.numero_grupo || null, // Inherit if in vacantes
+                                  reason: isAbsent ? `Inasistencia: ${getAbsenceMotivo(res.id, execDate)}` :
+                                    (isConvocado ? (currentLocation ? (isRotation ? `También en: ${currentLocation}` : `Ocupado en: ${currentLocation}`) : "Libre") : "Descanso")
+                                };
+
+                                if (isAbsent) tierInasistencias.push(alt);
+                                else if (isCapacitado && isConvocado) tier1.push(alt);
+                                else if (!isCapacitado && isConvocado) tier2.push(alt);
+                                else if (isCapacitado && !isConvocado) tier3.push(alt);
+                                else tier4.push(alt);
+                              });
+
+                              const renderTier = (title: string, residents: any[], color: string, Icon: any) => {
+                                if (residents.length === 0) return null;
+                                return (
+                                  <div className="mb-4">
+                                    <div className={`text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1 ${color}`}>
+                                      <Icon className="w-3 h-3" /> {title} ({residents.length})
+                                    </div>
+                                    <div className="space-y-1">
+                                      {residents.map((r, idx) => (
+                                        <button
+                                          key={idx}
+                                          disabled={r.isBusy}
+                                          onClick={() => handleAssignToDevice(r.id, device.id)}
+                                          className={`w-full text-left p-2 rounded text-xs border flex justify-between items-center transition-colors
+                                            ${r.isBusy
+                                              ? 'bg-slate-50 border-slate-200 opacity-60 cursor-not-allowed'
+                                              : 'bg-white border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 group'}`}
+                                        >
+                                          <span className={`font-bold ${r.isBusy ? 'text-slate-400' : 'text-slate-700 group-hover:text-indigo-800'}`}>
+                                            {r.name}
+                                          </span>
+                                          <span className="text-[9px] text-slate-400 italic">
+                                            {r.isBusy ? `🚫 ${r.reason}` : (r.reason === "Libre" ? "Asignar →" : r.reason)}
+                                          </span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              };
+
+                              return (
+                                <>
+                                  {renderTier("Convocados y Capacitados", tier1, "text-emerald-700", Check)}
+                                  {renderTier("Convocados NO Capacitados", tier2, "text-amber-700", AlertCircle)}
+                                  {renderTier("De Descanso (Capacitados)", tier3, "text-slate-500", Clock)}
+                                  {renderTier("De Descanso (NO Capacitados)", tier4, "text-slate-400", Clock)}
+                                  {renderTier("Inasistencias", tierInasistencias, "text-rose-700", XCircle)}
+                                </>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1716,6 +2142,34 @@ export default function AsignacionesApp() {
                                   <MonitorSmartphone className="w-2.5 h-2.5" />
                                   <span>{emptySeats} VAC.</span>
                                 </div>
+                                <div className="flex flex-col gap-1 items-center">
+                                  <div className="px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded shadow-sm text-[9px] font-black tracking-widest flex items-center gap-1 border border-amber-200">
+                                    <span>{(orgTypes[d] || 'dispositivos_fijos').replace('_', ' ').toUpperCase()}</span>
+                                  </div>
+                                  {isSemana && orgTypes[d] === 'rotacion_completa' && (() => {
+                                    const groups: Record<number, Set<number>> = {};
+                                    Object.values(assignmentsDb[d] || {}).forEach(arr => {
+                                      arr.forEach((r: any) => {
+                                        if (r.numero_grupo) {
+                                          if (!groups[r.numero_grupo]) groups[r.numero_grupo] = new Set();
+                                          groups[r.numero_grupo].add(r.id);
+                                        }
+                                      });
+                                    });
+                                    return (
+                                      <div className="flex flex-wrap justify-center gap-1 mt-0.5">
+                                        {Object.entries(groups).sort((a, b) => Number(a[0]) - Number(b[0])).map(([gn, set]) => {
+                                          const gColor = getGroupColor(Number(gn));
+                                          return (
+                                            <span key={gn} className={`${gColor} px-1 rounded-full text-[8px] font-black min-w-[14px] h-[14px] flex items-center justify-center border`} title={`Grupo ${gn}: ${set.size} residentes reales`}>
+                                              {gn}:{set.size}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
                               </div>
                             </div>
                           </th>
@@ -1765,18 +2219,29 @@ export default function AsignacionesApp() {
                                   assignments.map((res: any, idx: number) => {
                                     const absent = isAgentAbsent(res.id, date);
                                     return (
-                                      <button
+                                      <div
                                         key={idx}
                                         onClick={(e) => { e.stopPropagation(); setSelectedResident({ id: res.id, name: res.name, score: res.score, device: device.name, date }); setSelectedDevice(null); }}
-                                        className={`text-left px-2 py-1.5 rounded border text-sm flex justify-between items-center transition-all 
-                                        ${absent ? 'bg-stone-100 text-stone-600 border-stone-400 border-dashed' : getScoreColor(res.score)}
-                                        ${selectedResident && selectedResident.name === res.name && selectedResident.date === date ? 'ring-2 ring-indigo-500 shadow-md scale-[1.03] z-10 font-bold' : 'hover:scale-[1.02] hover:shadow-sm'}`
+                                        className={`text-left px-2 py-1.5 rounded border text-sm flex justify-between items-center transition-all cursor-pointer
+                                            ${absent ? 'bg-stone-100 text-stone-600 border-stone-400 border-dashed' : getScoreColor(res.score)}
+                                            ${selectedResident && selectedResident.name === res.name && selectedResident.date === date ? 'ring-2 ring-indigo-500 shadow-md scale-[1.03] z-10 font-bold' : 'hover:scale-[1.02] hover:shadow-sm'}`
                                         }
                                       >
-                                        <span className={`font-bold truncate max-w-[120px] text-xs ${absent ? 'line-through text-stone-500 opacity-60' : agentGroups[res.id] === 'A' ? 'text-indigo-900 border-b-2 border-indigo-400' : agentGroups[res.id] === 'B' ? 'text-rose-900 border-b-2 border-rose-400' : 'text-slate-800'}`}>
+                                        <span className={`font-bold truncate max-w-[100px] text-xs ${absent ? 'line-through text-stone-500 opacity-60' : agentGroups[res.id] === 'A' ? 'text-indigo-900 border-b-2 border-indigo-400' : agentGroups[res.id] === 'B' ? 'text-rose-900 border-b-2 border-rose-400' : 'text-slate-800'}`}>
                                           {absent && <span className="mr-1">🚫</span>}{res.name}
                                         </span>
-                                      </button>
+                                        {isSemana && orgTypes[date] === 'rotacion_completa' && !absent && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleSetGroup(res, date, Number(device.id));
+                                            }}
+                                            className={`ml-1 px-1.5 rounded text-[9px] font-black border transition-colors ${res.numero_grupo ? getGroupColor(res.numero_grupo) : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'}`}
+                                          >
+                                            G{res.numero_grupo || '?'}
+                                          </button>
+                                        )}
+                                      </div>
                                     )
                                   })
 
@@ -1859,11 +2324,14 @@ export default function AsignacionesApp() {
                             })();
                             const currentLocation = occupancies[res.id];
 
+                            const isRotation = orgTypes[selectedDateFilter] === 'rotacion_simple' || orgTypes[selectedDateFilter] === 'rotacion_completa';
+                            const isBusy = !!currentLocation && !isRotation;
+
                             const alt = {
                               id: res.id,
                               name: res.name,
-                              isBusy: !!currentLocation,
-                              reason: isConvocado ? (currentLocation ? `Ocupado en: ${currentLocation}` : "Libre hoy") : "Descanso"
+                              isBusy: isBusy,
+                              reason: isConvocado ? (currentLocation ? (isRotation ? `También en: ${currentLocation}` : `Ocupado en: ${currentLocation}`) : "Libre hoy") : "Descanso"
                             };
 
                             if (isAgentAbsent(res.id, selectedDateFilter!)) {
@@ -1885,7 +2353,7 @@ export default function AsignacionesApp() {
                                   {tier1.map((alt, i) => (
                                     <button key={i} className={`w-full text-left p-3 rounded-lg border-2 flex justify-between items-center group transition-colors
                                       ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-75 cursor-not-allowed' : 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100 cursor-pointer'}`}
-                                      onClick={() => { if (!alt.isBusy) { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); } }}>
+                                      onClick={() => { if (!alt.isBusy) { handleDirectAssign(alt.id, selectedDateFilter!, String(selectedDevice.id)); } }}>
                                       <div>
                                         <div className={`font-bold text-sm ${alt.isBusy ? 'text-slate-600' : 'text-emerald-900'}`}>{alt.name}</div>
                                         <div className={`text-[10px] font-medium mt-0.5 ${alt.isBusy ? 'text-rose-500' : 'text-emerald-700'}`}>{alt.reason}</div>
@@ -1905,7 +2373,7 @@ export default function AsignacionesApp() {
                                   {tier2.map((alt, i) => (
                                     <button key={i} className={`w-full text-left p-2.5 rounded-md border flex justify-between items-center group transition-colors
                                       ${alt.isBusy ? 'border-slate-200 bg-slate-50 opacity-70 cursor-not-allowed' : 'border-amber-200 bg-amber-50 hover:bg-amber-100 cursor-pointer'}`}
-                                      onClick={() => { if (!alt.isBusy) { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); } }}>
+                                      onClick={() => { if (!alt.isBusy) { handleDirectAssign(alt.id, selectedDateFilter!, String(selectedDevice.id)); } }}>
                                       <div>
                                         <div className={`font-semibold text-xs ${alt.isBusy ? 'text-slate-500' : 'text-amber-900'}`}>{alt.name}</div>
                                         <div className={`text-[9px] leading-tight mt-0.5 ${alt.isBusy ? 'text-rose-400 font-bold' : 'text-amber-700'}`}>{alt.reason}</div>
@@ -1924,7 +2392,7 @@ export default function AsignacionesApp() {
                                 <div className="space-y-1 opacity-75">
                                   {tier3.map((alt, i) => (
                                     <button key={i} className="w-full text-left p-2 rounded border border-rose-200 bg-white hover:bg-rose-50 cursor-pointer flex justify-between items-center transition-colors"
-                                      onClick={() => { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); }}>
+                                      onClick={() => { handleDirectAssign(alt.id, selectedDateFilter!, String(selectedDevice.id)); }}>
                                       <div>
                                         <div className="font-medium text-[11px] text-rose-800">{alt.name} <span className="text-[9px] text-rose-500 ml-1">({alt.reason})</span></div>
                                       </div>
@@ -1941,7 +2409,7 @@ export default function AsignacionesApp() {
                                 <div className="space-y-1 opacity-50">
                                   {tier4.map((alt, i) => (
                                     <button key={i} className="w-full text-left p-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer flex justify-between items-center transition-colors"
-                                      onClick={() => { setSelectedVacant({ id: alt.id, name: alt.name, date: selectedDateFilter! }); setSelectedDevice(null); }}>
+                                      onClick={() => { handleDirectAssign(alt.id, selectedDateFilter!, String(selectedDevice.id)); }}>
                                       <div className="font-medium text-[10px] text-slate-600">{alt.name}</div>
                                     </button>
                                   ))}
@@ -2071,13 +2539,35 @@ export default function AsignacionesApp() {
                   </h2>
                 </div>
 
-                <div className="flex bg-indigo-50 border border-indigo-100 p-2.5 rounded-xl gap-3">
+                <div className="flex bg-indigo-50 border border-indigo-100 p-2.5 rounded-xl gap-4 items-center shadow-sm">
+                  {isSemana && orgTypes[execDate] === 'rotacion_completa' && (() => {
+                    const groups: Record<number, Set<number>> = {};
+                    Object.values(assignmentsDb[execDate] || {}).forEach(arr => {
+                      arr.forEach((r: any) => {
+                        if (r.numero_grupo) {
+                          if (!groups[r.numero_grupo]) groups[r.numero_grupo] = new Set();
+                          groups[r.numero_grupo].add(r.id);
+                        }
+                      });
+                    });
+                    return (
+                      <div className="flex gap-2">
+                        {Object.entries(groups).sort((a, b) => Number(a[0]) - Number(b[0])).map(([gn, set]) => (
+                          <div key={gn} className="flex flex-col items-center">
+                            <span className={`text-[12px] font-black px-2 rounded-lg border shadow-sm ${getGroupColor(Number(gn))}`}>{set.size}</span>
+                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter mt-1">G{gn}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  <div className="w-px h-8 bg-indigo-200/50 mx-1" />
                   <div>
                     <label className="block text-[10px] font-bold text-indigo-800 uppercase tracking-wider mb-1.5 px-1 flex items-center gap-1">
                       <Calendar className="w-3 h-3" /> Fecha a operar
                     </label>
                     <select
-                      className="w-full md:w-56 bg-white border border-indigo-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 shadow-sm"
+                      className="w-full md:w-48 bg-white border border-indigo-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all"
                       value={execDate}
                       onChange={(e) => setExecDate(e.target.value)}
                     >
@@ -2087,8 +2577,9 @@ export default function AsignacionesApp() {
                   <div className="flex items-end">
                     <button
                       onClick={() => setShowDevicesMenu(true)}
-                      className="h-[38px] px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-sm transition-colors flex items-center gap-2 shadow-sm"
+                      className="h-[38px] px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-sm transition-colors flex items-center gap-2 shadow-md"
                     >
+                      <LayoutDashboard className="w-4 h-4" />
                       Menú
                     </button>
                   </div>
@@ -2219,70 +2710,110 @@ export default function AsignacionesApp() {
                   const assignments = assignmentsDb[execDate]?.[device.id] || [];
                   if (assignments.length === 0) return null; // No abrir dispositivo vacío hoy
 
+                  const renderResidentCard = (res: any, i: number) => {
+                    const isAbsent = isAgentAbsent(res.id, execDate);
+                    return (
+                      <div key={res.id + "-" + i} className={`flex flex-col gap-2 p-3 rounded-xl border transition-colors ${isAbsent ? 'bg-stone-50 border-stone-300 border-dashed' : 'bg-slate-50 border-slate-200'}`}>
+
+                        <div className="flex items-center justify-between">
+                          <div className="flex flex-col">
+                            <span className={`font-bold text-sm ${isAbsent ? 'text-stone-500 line-through opacity-70' : 'text-slate-900'}`}>{res.name}</span>
+                            {isAbsent && <span className="text-[10px] text-stone-500 font-bold mt-0.5">MARCADO AUSENTE</span>}
+                            {!isAbsent && (!convocadosDb[execDate] || !convocadosDb[execDate].some((c: any) => c.id === res.id)) && (
+                              <span className="text-[9px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded mt-0.5 border border-indigo-200 self-start">EN DESCANSO</span>
+                            )}
+                          </div>
+                          <button
+                            onClick={async () => {
+                              if (confirm(`¿Quitar definitivamente a ${res.name} de este dispositivo para la fecha ${execDate}?`)) {
+                                setIsLoading(true);
+                                const yyyy = selectedMonth.split(" ")[1] || "2026";
+                                const [d, mStr] = execDate.split("/");
+                                const fechaDB = `${yyyy}-${mStr}-${d}`; // YYYY-MM-DD
+                                const tableToMutate = isSemana ? 'menu_semana' : 'menu';
+
+                                const { error } = await supabase.from(tableToMutate)
+                                  .update({ id_dispositivo: 999, estado_ejecucion: 'planificado' })
+                                  .eq('id_agente', res.id)
+                                  .eq('fecha_asignacion', fechaDB)
+                                  .eq('id_dispositivo', device.id);
+
+                                if (error) {
+                                  alert("Error de base de datos: " + error.message);
+                                  setIsLoading(false);
+                                } else {
+                                  // UndoStack: registrar la acción para poder deshacerla
+                                  pushUndo({
+                                    snapshot: {
+                                      id_agente: res.id,
+                                      fecha_asignacion: fechaDB,
+                                      id_dispositivo: Number(device.id),
+                                      estado_ejecucion: 'planificado'
+                                    }
+                                  });
+                                  setRefreshCounter(prev => prev + 1);
+                                }
+                              }
+                            }}
+                            className={`text-[10px] px-2 py-1 rounded-md font-bold transition-colors border ${isAbsent ? 'bg-white text-rose-700 border-rose-300 hover:bg-rose-50' : 'bg-white text-slate-500 border-slate-300 hover:text-rose-600 hover:border-rose-400 shadow-sm'}`}
+                          >
+                            Quitar
+                          </button>
+                        </div>
+
+                        {/* Action Switch Device */}
+                        {!isAbsent && (
+                          <button
+                            onClick={() => { setSelectedResident({ id: res.id, name: res.name, score: res.score, device: device.name, date: execDate }); }}
+                            className="mt-1 w-full flex items-center justify-center gap-1.5 bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 text-[10px] uppercase tracking-wider font-bold py-1.5 rounded-lg transition-colors shadow-sm"
+                          >
+                            <ArrowRightLeft className="w-3 h-3" /> Cambiar Residente
+                          </button>
+                        )}
+
+                        {isSemana && orgTypes[execDate] === 'rotacion_completa' && !isAbsent && (
+                          <button
+                            onClick={async () => {
+                              const newGroup = prompt(`Ingrese el Número de Grupo para ${res.name}:`, res.numero_grupo || "");
+                              if (newGroup !== null) {
+                                const groupNum = parseInt(newGroup) || null;
+                                setIsLoading(true);
+                                const yyyy = selectedMonth.split(" ")[1] || "2026";
+                                const [d, mStr] = execDate.split("/");
+                                const fechaDB = `${yyyy}-${mStr}-${d}`; // YYYY-MM-DD
+
+                                const { error } = await supabase.from('menu_semana')
+                                  .update({ numero_grupo: groupNum })
+                                  .eq('id_agente', res.id)
+                                  .eq('fecha_asignacion', fechaDB)
+                                  .eq('id_dispositivo', device.id);
+
+                                if (error) alert("Error: " + error.message);
+                                setIsLoading(false);
+                                setRefreshCounter(prev => prev + 1);
+                              }
+                            }}
+                            className={`mt-0 w-full flex items-center justify-center gap-1.5 border hover:opacity-90 text-[10px] uppercase tracking-wider font-bold py-1.5 rounded-lg transition-all shadow-sm ${res.numero_grupo ? getGroupColor(res.numero_grupo) : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white'}`}
+                          >
+                            Grupo {res.numero_grupo || '?'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  };
+
                   return (
                     <div key={device.id} className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-shadow">
                       <div className={`px-4 py-3 border-b border-slate-200 flex items-center justify-between ${getFloorColor(device.name)}`}>
                         <h4 className="font-bold text-sm truncate flex-1 leading-snug">{device.name}</h4>
+                        {isSemana && orgTypes[execDate] === 'rotacion_completa' && (
+                          <div className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 bg-white rounded-full bg-opacity-50 mix-blend-multiply opacity-70">
+                            Por Grupos
+                          </div>
+                        )}
                       </div>
                       <div className="p-4 flex-1 flex flex-col gap-3">
-                        {assignments.map((res: any, i: number) => {
-                          const isAbsent = isAgentAbsent(res.id, execDate);
-                          return (
-                            <div key={i} className={`flex flex-col gap-2 p-3 rounded-xl border transition-colors ${isAbsent ? 'bg-stone-50 border-stone-300 border-dashed' : 'bg-slate-50 border-slate-200'}`}>
-
-                              <div className="flex items-center justify-between">
-                                <div className="flex flex-col">
-                                  <span className={`font-bold text-sm ${isAbsent ? 'text-stone-500 line-through opacity-70' : 'text-slate-900'}`}>{res.name}</span>
-                                  {isAbsent && <span className="text-[10px] text-stone-500 font-bold mt-0.5">MARCADO AUSENTE</span>}
-                                </div>
-                                <button
-                                  onClick={async () => {
-                                    if (confirm(`¿Quitar definitivamente a ${res.name} de este dispositivo para la fecha ${execDate}?`)) {
-                                      setIsLoading(true);
-                                      const yyyy = selectedMonth.split(" ")[1] || "2026";
-                                      const [d, mStr] = execDate.split("/");
-                                      const fechaDB = `${yyyy}-${mStr}-${d}`; // YYYY-MM-DD
-
-                                      const { error } = await supabase.from('menu')
-                                        .update({ id_dispositivo: 999, estado_ejecucion: 'planificado' })
-                                        .eq('id_agente', res.id)
-                                        .eq('fecha_asignacion', fechaDB);
-
-                                      if (error) {
-                                        alert("Error de base de datos: " + error.message);
-                                        setIsLoading(false);
-                                      } else {
-                                        // UndoStack: registrar la acción para poder deshacerla
-                                        pushUndo({
-                                          snapshot: {
-                                            id_agente: res.id,
-                                            fecha_asignacion: fechaDB,
-                                            id_dispositivo: Number(device.id),
-                                            estado_ejecucion: 'planificado'
-                                          }
-                                        });
-                                        window.location.reload();
-                                      }
-                                    }
-                                  }}
-                                  className={`text-[10px] px-2 py-1 rounded-md font-bold transition-colors border ${isAbsent ? 'bg-white text-rose-700 border-rose-300 hover:bg-rose-50' : 'bg-white text-slate-500 border-slate-300 hover:text-rose-600 hover:border-rose-400 shadow-sm'}`}
-                                >
-                                  Quitar
-                                </button>
-                              </div>
-
-                              {/* Action Switch Device */}
-                              {!isAbsent && (
-                                <button
-                                  onClick={() => { setSelectedResident({ id: res.id, name: res.name, score: res.score, device: device.name, date: execDate }); }}
-                                  className="mt-1 w-full flex items-center justify-center gap-1.5 bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 text-[10px] uppercase tracking-wider font-bold py-1.5 rounded-lg transition-colors shadow-sm"
-                                >
-                                  <ArrowRightLeft className="w-3 h-3" /> Cambiar Residente
-                                </button>
-                              )}
-                            </div>
-                          )
-                        })}
+                        {assignments.map((res: any, i: number) => renderResidentCard(res, i))}
                       </div>
                     </div>
                   )
@@ -2371,6 +2902,27 @@ export default function AsignacionesApp() {
                           </th>
                         ))}
                       </tr>
+                      {/* Fila de Tipo de Organización (Solo Semana) */}
+                      {isSemana && (
+                        <tr className="bg-slate-50 border-b border-slate-200">
+                          <td className="sticky left-0 bg-slate-100 p-3 border-r border-slate-200 font-bold text-xs text-slate-700 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                            Tipo de Organización
+                          </td>
+                          {activeDates.map(date => (
+                            <td key={`org-${date}`} className="p-2 border-r border-slate-200 text-center">
+                              <select
+                                className="w-full text-[10px] font-bold p-1 rounded border border-slate-300 text-slate-700 outline-none hover:bg-slate-50 focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                                value={orgTypes[date] || 'dispositivos_fijos'}
+                                onChange={(e) => setOrgTypes(prev => ({ ...prev, [date]: e.target.value }))}
+                              >
+                                <option value="dispositivos_fijos">Dispositivos Fijos</option>
+                                <option value="rotacion_simple">Rotación Simple</option>
+                                <option value="rotacion_completa">Rotación Completa</option>
+                              </select>
+                            </td>
+                          ))}
+                        </tr>
+                      )}
                     </thead>
                     <tbody>
                       {dbDevices.map(device => (
@@ -2648,7 +3200,7 @@ export default function AsignacionesApp() {
                           <h2 className={`text-lg font-black ${style.text} tracking-tight`}>{style.name}</h2>
                           <span className="text-xs font-bold text-stone-400 ml-1">({pisoDevices.length} dispositivos)</span>
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className={`grid gap-3 ${isSemana && orgTypes[menuDate] === 'rotacion_completa' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
                           {pisoDevices.map(({ device, residents }) => (
                             <div key={device.id} className={`${style.bg} ${style.border} border rounded-xl p-4 transition-all hover:shadow-md`}>
                               <div className="flex items-center justify-between mb-2">
@@ -2659,18 +3211,72 @@ export default function AsignacionesApp() {
                                   {residents.length}
                                 </span>
                               </div>
-                              {residents.length > 0 ? (
-                                <div className="space-y-1.5">
-                                  {residents.map((res: any, i: number) => (
-                                    <div key={i} className="flex items-center gap-2 bg-white/70 rounded-lg px-3 py-2 border border-white/50">
-                                      <User className="w-3.5 h-3.5 text-stone-400" />
-                                      <span className="text-sm font-bold text-stone-800">{res.name}</span>
+                              {(() => {
+                                if (residents.length === 0) {
+                                  return <div className="text-xs italic text-stone-400 py-2">Sin asignar</div>;
+                                }
+
+                                if (isSemana && orgTypes[menuDate] === 'rotacion_completa') {
+                                  const groups: Record<number, any[]> = {};
+                                  const unassigned: any[] = [];
+                                  residents.forEach((res: any) => {
+                                    if (res.numero_grupo) {
+                                      if (!groups[res.numero_grupo]) groups[res.numero_grupo] = [];
+                                      groups[res.numero_grupo].push(res);
+                                    } else {
+                                      unassigned.push(res);
+                                    }
+                                  });
+                                  const groupKeys = Object.keys(groups).sort((a, b) => Number(a) - Number(b));
+
+                                  return (
+                                    <div className="flex flex-row gap-3 pb-2 overflow-x-auto custom-scrollbar scroll-smooth">
+                                      {groupKeys.map(gk => (
+                                        <div key={gk} className="min-w-[200px] bg-white/60 border border-white/80 rounded-xl p-3 flex flex-col gap-2 shadow-sm">
+                                          <div className="text-[11px] font-black text-stone-600 uppercase tracking-widest border-b border-stone-200/50 pb-2">
+                                            <div className="flex items-center gap-2">
+                                              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] text-white border ${getGroupColor(Number(gk))}`}>{gk}</span>
+                                              Grupo {gk}
+                                            </div>
+                                          </div>
+                                          <div className="flex flex-col gap-2">
+                                            {groups[Number(gk)].map((res: any, i: number) => (
+                                              <div key={i} className="flex items-center gap-1.5 bg-white/90 rounded-lg px-3 py-2 shadow-sm border border-white/50">
+                                                <User className="w-3.5 h-3.5 text-stone-400" />
+                                                <span className={`text-sm font-bold text-stone-800 ${getGroupUnderline(res.numero_grupo)}`}>{res.name}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ))}
+                                      {(unassigned.length > 0 || groupKeys.length === 0) && (
+                                        <div className="w-full bg-stone-50/50 border border-stone-200/50 border-dashed rounded-xl p-3 flex flex-col gap-2 shadow-sm">
+                                          <div className="text-[10px] font-bold text-stone-500 uppercase tracking-widest border-b border-stone-200/50 pb-2">Sin Grupo</div>
+                                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            {unassigned.map((res: any, i: number) => (
+                                              <div key={i} className="flex items-center gap-1.5 bg-white/70 rounded-lg px-3 py-2 shadow-sm opacity-80">
+                                                <User className="w-3.5 h-3.5 text-stone-400" />
+                                                <span className="text-sm font-bold text-stone-800">{res.name}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
                                     </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="text-xs italic text-stone-400 py-2">Sin asignar</div>
-                              )}
+                                  );
+                                } else {
+                                  return (
+                                    <div className="space-y-1.5">
+                                      {residents.map((res: any, i: number) => (
+                                        <div key={i} className="flex items-center gap-2 bg-white/70 rounded-lg px-3 py-2 border border-white/50 shadow-sm">
+                                          <User className="w-3.5 h-3.5 text-stone-400" />
+                                          <span className="text-sm font-bold text-stone-800">{res.name}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                }
+                              })()}
                             </div>
                           ))}
                         </div>
@@ -2844,6 +3450,6 @@ export default function AsignacionesApp() {
         )}
 
       </div>
-    </div>
+    </div >
   );
 }

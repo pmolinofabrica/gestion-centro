@@ -159,3 +159,20 @@ Esto mismo se aplicó proactivamente a la solicitud de la tabla `menu` (Asignaci
 **Solución:**
 - Blindar las variables JS del `split` con fallback operator robusto `(selectedMonth || "Marzo 2026").split(" ")`.
 - Reemplazar el `31` hardcodeado por el constructor nativo de fechas de JS que sabe matemáticamente cuántos días tiene cualquier mes (contemplando años bisiestos): `new Date(year, month, 0).getDate()`.
+
+---
+
+## 🟡 Error de UX: Fragilidad en la Selección por Nombres (Sidebar de Ejecución)
+
+**Síntoma:** Al asignar residentes desde el sidebar de "Menú" de dispositivos, se usaba `a.name.includes(r.apellido)`, lo que fallaba con residentes de apellidos similares o con acentos, causando asignaciones invisibles o erróneas.
+
+**Causa Raíz:** El frontend dependía de comparaciones de strings de nombres en lugar de IDs únicos, y el sidebar de ejecución no contemplaba las reglas de **Rotación**, ocultando residentes ya asignados en otros pisos.
+
+**Solución Implementada:**
+1. **Refactor ID-Based**: Se migraron todas las funciones (`handleAssignToDevice`, `toggleAbsent`) a búsquedas por `id_agente` numérico.
+2. **Niveles (Tiers)**: Se replicó la lógica de la matriz en el sidebar, categorizando residentes por Convocado/Capacitado para dar contexto visual inmediato.
+3. **Lógica de Bloqueo Contextual**:
+   - En Modo Fijo: Bloqueo si está asignado en otro piso (Candado).
+   - En Modo Rotación: Permitir selección múltiple con aviso de ubicación.
+   - Inasistencias: Bloqueo absoluto.
+4. **Persistencia de Grupos**: Se integró `inheritedGroup` en las asignaciones desde el sidebar para mantener la consistencia del número de grupo sin intervención manual extra.
