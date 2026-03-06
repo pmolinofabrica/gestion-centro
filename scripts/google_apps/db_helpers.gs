@@ -347,12 +347,53 @@ function getOrCreateSheet_(name) {
 
 /**
  * Formatea una fecha a YYYY-MM-DD
- * @param {Date|string} dateValue - Fecha a formatear
+ * @param {Date|string|number} dateValue - Fecha a formatear
  * @returns {string} Fecha formateada
  */
 function formatDate_(dateValue) {
+  if (!dateValue) return null;
   if (dateValue instanceof Date) {
-    return Utilities.formatDate(dateValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    return Utilities.formatDate(dateValue, 'America/Argentina/Buenos_Aires', 'yyyy-MM-dd');
+  }
+  // Si es un número (serial de Excel), convertir primero
+  if (typeof dateValue === 'number') {
+    var d = new Date(new Date(1899, 11, 30).getTime() + Math.floor(dateValue) * 86400000);
+    return Utilities.formatDate(d, 'America/Argentina/Buenos_Aires', 'yyyy-MM-dd');
   }
   return String(dateValue);
+}
+
+/**
+ * Formatea un timestamp para Postgres (ISO 8601)
+ * Evita errores de zona horaria no reconocida como "GMT-0300"
+ * @param {Date|string} val - Valor de fecha/hora
+ * @returns {string} ISO String
+ */
+function formatTimestamp_(val) {
+  if (!val) return null;
+  var d = (val instanceof Date) ? val : new Date(val);
+  // forzar toISOString() que es el standard que Postgres ama
+  try {
+    return d.toISOString();
+  } catch(e) {
+    Logger.log('⚠️ formatTimestamp_: Error al parsear ' + val);
+    return null;
+  }
+}
+
+/**
+ * Alerta por email ante errores críticos
+ * @param {string} asunto - Titulo del error
+ * @param {string} cuerpo - Detalle del error
+ */
+function _alertar_(asunto, cuerpo) {
+  try {
+    MailApp.sendEmail(
+      Session.getEffectiveUser().getEmail(),
+      '[RRHH Molino] ' + asunto,
+      cuerpo + '\n\nFecha: ' + new Date().toString()
+    );
+  } catch(e) { 
+    Logger.log('⚠️ No se pudo enviar alerta por email: ' + e.message);
+  }
 }

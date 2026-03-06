@@ -218,18 +218,21 @@ export default function AsignacionesApp() {
         if (resiData) setDbResidents(resiData);
 
         // Fetch preliminar de las capacitaciones para agrupar IDs
-        const capsRep = await supabase.from('capacitaciones').select('id_cap, id_dia, grupo');
+        const capsRep = await supabase.from('capacitaciones').select('id_cap, id_dia, id_turno, grupo');
         const capData = capsRep.data || [];
         const diaIds = Array.from(new Set(capData.map(c => c.id_dia).filter(Boolean)));
 
-        // Fetch de los demas catalogos aplicando el filtro IN en dias
-        const [partsRes, dispoCapsRes, diasRes] = await Promise.all([
-          supabase.from('capacitaciones_participantes').select('id_cap, id_agente, asistio').eq('asistio', true).limit(3000),
+        // Fetch de los demas catalogos
+        const [partsRes, dispoCapsRes, diasRes, convsRes, planisRes] = await Promise.all([
+          // Traemos todos los participantes (con y sin asistencia)
+          supabase.from('capacitaciones_participantes').select('id_cap, id_agente, asistio').limit(4000),
           supabase.from('capacitaciones_dispositivos').select('id_cap, id_dispositivo').limit(2000),
-          supabase.from('dias').select('id_dia, fecha').in('id_dia', diaIds)
+          supabase.from('dias').select('id_dia, fecha').in('id_dia', diaIds),
+          supabase.from('convocatoria').select('id_convocatoria, id_agente, id_plani').eq('estado', 'vigente'),
+          supabase.from('planificacion').select('id_plani, id_dia, id_turno')
         ]);
 
-        if (resiData && capData.length && partsRes.data && dispoCapsRes.data && diasRes.data) {
+        if (resiData && capData.length && partsRes.data && dispoCapsRes.data && diasRes.data && convsRes.data && planisRes.data) {
 
           // Mapear Fechas reales de la tabla de dias
           const diasDict: Record<number, string> = {};
@@ -237,13 +240,19 @@ export default function AsignacionesApp() {
             if (d.fecha) diasDict[d.id_dia] = d.fecha.substring(0, 10);
           });
 
-          // Mapear Fechas de Cap
+          // Mapear Fechas de Cap y Vincular a Planificacion
           const capDates: Record<number, string> = {};
           const capGroups: Record<number, string> = {};
+          const planiToCap: Record<number, number> = {}; // id_plani -> id_cap
+
           capData.forEach(c => {
             const realDate = diasDict[c.id_dia];
             if (realDate) capDates[c.id_cap] = realDate;
             if (c.grupo) capGroups[c.id_cap] = c.grupo;
+
+            // Vincular via planificacion
+            const matchPlani = planisRes.data.find(p => p.id_dia === c.id_dia && p.id_turno === c.id_turno);
+            if (matchPlani) planiToCap[matchPlani.id_plani] = c.id_cap;
           });
 
           // Mapear id_cap -> array of id_dispositivo
@@ -262,10 +271,21 @@ export default function AsignacionesApp() {
             };
           });
 
-          // Asignar participaciones
+          // 1. VETOS (Inasistencias explicitas)
+          const vetoedMap: Record<string, Set<number>> = {}; // agentId -> Set of id_cap
+          partsRes.data.forEach(p => {
+            if (p.asistio === false) {
+              const agId = String(p.id_agente);
+              if (!vetoedMap[agId]) vetoedMap[agId] = new Set();
+              vetoedMap[agId].add(p.id_cap);
+            }
+          });
+
+          // 2. CAPACITACIONES CONFIRMADAS (Asistio = true)
           const gruposAgenteMap: Record<string, Set<string>> = {};
           partsRes.data.forEach(p => {
-            const agId = p.id_agente;
+            if (p.asistio !== true) return;
+            const agId = String(p.id_agente);
             const cId = p.id_cap;
             const cDate = capDates[cId];
             const dispos = capDispos[cId] || [];
@@ -275,19 +295,52 @@ export default function AsignacionesApp() {
               gruposAgenteMap[agId].add(capGroups[cId]);
             }
 
-            if (residentsMap[agId] && cDate) {
+            if (residentsMap[p.id_agente] && cDate) {
               dispos.forEach(dId => {
                 const dKey = String(dId);
-                if (!residentsMap[agId].caps[dKey] || residentsMap[agId].caps[dKey] < cDate) {
-                  residentsMap[agId].caps[dKey] = cDate;
+                // Solo si no está vetado para ESTA sesión específica (aunque si asistió=true no debería estar vetado)
+                if (!residentsMap[p.id_agente].caps[dKey] || residentsMap[p.id_agente].caps[dKey] < cDate) {
+                  residentsMap[p.id_agente].caps[dKey] = cDate;
                 }
               });
             }
           });
+
+          // 3. CAPACITACIONES PLANIFICADAS (Convocatorias vigentes)
+          convsRes.data.forEach(cv => {
+            const agId = String(cv.id_agente);
+            const cId = planiToCap[cv.id_plani];
+            if (!cId) return;
+
+            // SI ESTÁ VETADO POR INASISTENCIA, IGNORAMOS PLANIFICACIÓN
+            if (vetoedMap[agId]?.has(cId)) return;
+
+            const cDate = capDates[cId];
+            const dispos = capDispos[cId] || [];
+
+            // El grupo de la convocatoria es PRIORITARIO para el label visual
+            if (capGroups[cId]) {
+              if (!gruposAgenteMap[agId]) gruposAgenteMap[agId] = new Set();
+              gruposAgenteMap[agId].add(capGroups[cId]);
+            }
+
+            if (residentsMap[cv.id_agente] && cDate) {
+              dispos.forEach(dId => {
+                const dKey = String(dId);
+                // No pisamos caps reales confirmadas con fechas pasadas, 
+                // pero habilitamos capacidad para el futuro/hoy.
+                if (!residentsMap[cv.id_agente].caps[dKey]) {
+                  residentsMap[cv.id_agente].caps[dKey] = cDate;
+                }
+              });
+            }
+          });
+
           const gruposAgenteFinal: Record<string, string> = {};
           Object.keys(gruposAgenteMap).forEach(k => {
-            // Si el agente está en más de un grupo en DB, preferimos A predeterminado.
+            // Priorizamos grupos de convocatorias vigentes si existen
             const grps = Array.from(gruposAgenteMap[k]);
+            // Mantener lógica de preferencia 'A' si hay ambigüedad histórica
             gruposAgenteFinal[k] = grps.includes('A') ? 'A' : grps[0];
           });
           setAgentGroups(gruposAgenteFinal);

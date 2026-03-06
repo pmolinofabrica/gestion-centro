@@ -311,15 +311,3 @@ function _syncMasivo_(fn, nombre) {
   SpreadsheetApp.getUi().alert('Sync ' + nombre + ': ' + ok + ' registrados, ' + err + ' errores.');
 }
 
-// ============================================================
-// HELPER PRIVADO: Alerta por email ante errores críticos
-// ============================================================
-function _alertar_(asunto, cuerpo) {
-  try {
-    MailApp.sendEmail(
-      Session.getEffectiveUser().getEmail(),
-      '[RRHH Molino] ' + asunto,
-      cuerpo + '\n\nFecha: ' + new Date().toString()
-    );
-  } catch(e) { /* silenciar si no hay permisos de email */ }
-}
