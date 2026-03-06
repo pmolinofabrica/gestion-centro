@@ -298,8 +298,8 @@ export default function AsignacionesApp() {
             if (residentsMap[p.id_agente] && cDate) {
               dispos.forEach(dId => {
                 const dKey = String(dId);
-                // Solo si no está vetado para ESTA sesión específica (aunque si asistió=true no debería estar vetado)
-                if (!residentsMap[p.id_agente].caps[dKey] || residentsMap[p.id_agente].caps[dKey] < cDate) {
+                // Conservar la fecha MÁS TEMPRANA de capacitación para ese dispositivo
+                if (!residentsMap[p.id_agente].caps[dKey] || cDate < residentsMap[p.id_agente].caps[dKey]) {
                   residentsMap[p.id_agente].caps[dKey] = cDate;
                 }
               });
@@ -1356,6 +1356,20 @@ export default function AsignacionesApp() {
   // Mutación: Guardar la matriz de dispositivos
   const handleSaveMatrixDevices = async () => {
     if (isLoading) return;
+
+    // Validación: No permitir guardar un cupo menor a los residentes ya asignados
+    for (const strDate of Object.keys(calendarDb)) {
+      for (const devId of Object.keys(calendarDb[strDate])) {
+        const cupo = calendarDb[strDate][devId];
+        const asigCount = assignmentsDb[strDate]?.[devId]?.length || 0;
+        if (cupo < asigCount) {
+          const devName = dbDevices.find(d => String(d.id) === String(devId))?.name || devId;
+          alert(`Error: El dispositivo "${devName}" en la fecha ${strDate} tiene ${asigCount} residentes asignados, pero intentas guardar un cupo de ${cupo}. Por favor, quita residentes del dispositivo antes de reducir su cupo.`);
+          return; // Aborta la operación de guardado
+        }
+      }
+    }
+
     setIsLoading(true);
     try {
       const payload: any[] = [];
@@ -1376,25 +1390,10 @@ export default function AsignacionesApp() {
       });
 
       if (payload.length > 0) {
-        // No podemos usar upsert porque la constraint incluye id_turno que el frontend no maneja nativamente como PK.
-        // Estrategia: agrupar por fecha y turnos para borrar sólo los de la vista actual.
-        const deleteMapping: Record<string, number[]> = {};
-        payload.forEach((p: any) => {
-          if (!deleteMapping[p.fecha]) deleteMapping[p.fecha] = [];
-          if (!deleteMapping[p.fecha].includes(p.id_turno)) {
-            deleteMapping[p.fecha].push(p.id_turno);
-          }
-        });
+        // Estrategia: UPSERT basado en la constraint uq_calendario (fecha, id_turno, id_dispositivo)
+        const { error } = await supabase.from('calendario_dispositivos')
+          .upsert(payload, { onConflict: 'fecha, id_turno, id_dispositivo' });
 
-        for (const f of Object.keys(deleteMapping)) {
-          const turnosAfectados = deleteMapping[f];
-          await supabase.from('calendario_dispositivos')
-            .delete()
-            .eq('fecha', f)
-            .in('id_turno', turnosAfectados);
-        }
-
-        const { error } = await supabase.from('calendario_dispositivos').insert(payload);
         if (error) throw error;
 
         // Persist orgTypes back to menu_semana
