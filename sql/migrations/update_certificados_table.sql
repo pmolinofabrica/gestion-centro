@@ -6,6 +6,7 @@
 
 -- 1. Eliminar la vista que depende de las columnas a eliminar
 DROP VIEW IF EXISTS vista_certificados_completa;
+DROP VIEW IF EXISTS vista_inasistencias_mes CASCADE;
 
 -- 2. Modificar la tabla certificados
 
@@ -13,16 +14,20 @@ DROP VIEW IF EXISTS vista_certificados_completa;
 ALTER TABLE certificados ADD COLUMN IF NOT EXISTS fecha_carga TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 
 -- Eliminar las columnas que ya no nos interesan
-ALTER TABLE certificados DROP COLUMN IF EXISTS fecha_entrega_certificado;
-ALTER TABLE certificados DROP COLUMN IF EXISTS tipo_certificado;
-ALTER TABLE certificados DROP COLUMN IF EXISTS estado_certificado;
+-- Hacer uso de CASCADE en estado_certificado debido a triggers dependientes
+ALTER TABLE certificados DROP COLUMN IF EXISTS fecha_entrega_certificado CASCADE;
+ALTER TABLE certificados DROP COLUMN IF EXISTS tipo_certificado CASCADE;
+ALTER TABLE certificados DROP COLUMN IF EXISTS estado_certificado CASCADE;
 
 -- Nota: Mantengo 'id_inasistencia' porque el trigger de Supabase podría usarlo,
 -- pero el formulario nuevo insertará usando id_agente y fecha_inasistencia_justifica
 -- y el trigger existente (que mencionaste) se encarga de cruzar los datos y vincularlos.
+-- Es necesario permitir que la inserción se realice con id_inasistencia nulo.
+ALTER TABLE certificados ALTER COLUMN id_inasistencia DROP NOT NULL;
 
 -- Agregar una restricción UNIQUE para evitar certificados duplicados por agente y día,
 -- permitiendo que el UPSERT funcione correctamente en el script de GAS
+ALTER TABLE certificados DROP CONSTRAINT IF EXISTS uq_certificados_agente_fecha;
 ALTER TABLE certificados ADD CONSTRAINT uq_certificados_agente_fecha UNIQUE (id_agente, fecha_inasistencia_justifica);
 
 
